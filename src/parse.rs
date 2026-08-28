@@ -79,6 +79,24 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
     match name {
         "mi" => Ok(Node::Identifier(text_content(node))),
         "mn" => Ok(Node::Number(text_content(node))),
+        // `<ms>` renders as text wrapped in its quote characters.
+        "ms" => {
+            let lquote = node.attribute("lquote").unwrap_or("\"");
+            let rquote = node.attribute("rquote").unwrap_or("\"");
+            Ok(Node::Text(format!(
+                "{lquote}{}{rquote}",
+                text_content(node)
+            )))
+        }
+        // `<semantics>` and legacy `<maction>` render their first child;
+        // annotations and alternate actions are ignored.
+        "semantics" | "maction" => match node.children().find(|c| c.is_element()) {
+            Some(first) => parse_node(first),
+            None => Ok(Node::Row(Vec::new())),
+        },
+        // `<merror>` renders its contents; error styling (red, border) is a
+        // consumer concern until the display list carries paint info.
+        "merror" => Ok(Node::Row(parse_children(node)?)),
         "mo" => Ok(Node::Operator {
             text: text_content(node),
             attrs: OperatorAttrs {
