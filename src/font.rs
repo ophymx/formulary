@@ -43,6 +43,8 @@ pub(crate) enum Stretched {
 pub struct MathFont<'a> {
     face: ttf_parser::Face<'a>,
     units_per_em: f32,
+    #[cfg(feature = "shaping")]
+    shaper: Option<rustybuzz::Face<'a>>,
 }
 
 impl<'a> MathFont<'a> {
@@ -54,7 +56,17 @@ impl<'a> MathFont<'a> {
             return Err(FontError::NoMathTable);
         }
         let units_per_em = face.units_per_em() as f32;
-        Ok(MathFont { face, units_per_em })
+        Ok(MathFont {
+            face,
+            units_per_em,
+            #[cfg(feature = "shaping")]
+            shaper: rustybuzz::Face::from_slice(data, index),
+        })
+    }
+
+    #[cfg(feature = "shaping")]
+    pub(crate) fn shaper(&self) -> Option<&rustybuzz::Face<'a>> {
+        self.shaper.as_ref()
     }
 
     pub fn units_per_em(&self) -> f32 {
@@ -173,6 +185,41 @@ impl<'a> MathFont<'a> {
             }
             let extent = bottom + overlap;
             return Some(Stretched::Assembly { parts, extent });
+        }
+        None
+    }
+
+    /// The font's `ssty` alternate for `glyph` at script depth `level` (1 or
+    /// 2): script-tuned glyph variants, primes being the classic case.
+    ///
+    /// Applied manually from GSUB rather than through shaping: math fonts
+    /// register `ssty` under the OpenType `math` script, which rustybuzz
+    /// (as of 0.20) never selects — it lowercases the Unicode script tag
+    /// `Zmth` to `zmth` instead of HarfBuzz's special-cased `math`.
+    pub(crate) fn script_alternate(&self, glyph: GlyphId, level: u16) -> Option<GlyphId> {
+        debug_assert!(level >= 1);
+        let gsub = self.face.tables().gsub?;
+        let feature = gsub
+            .features
+            .find(ttf_parser::Tag::from_bytes(b"ssty"))?;
+        for li in feature.lookup_indices {
+            let Some(lookup) = gsub.lookups.get(li) else {
+                continue;
+            };
+            for sub in lookup
+                .subtables
+                .into_iter::<ttf_parser::gsub::SubstitutionSubtable>()
+            {
+                if let ttf_parser::gsub::SubstitutionSubtable::Alternate(alt) = sub {
+                    if let Some(idx) = alt.coverage.get(glyph) {
+                        let set = alt.alternate_sets.get(idx)?;
+                        // Deeper nesting takes the furthest available
+                        // alternate (ssty1, then ssty2 when the font has it).
+                        let last = set.alternates.len().checked_sub(1)?;
+                        return set.alternates.get(level.saturating_sub(1).min(last));
+                    }
+                }
+            }
         }
         None
     }

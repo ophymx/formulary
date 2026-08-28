@@ -10,8 +10,13 @@ categories = ["mathematics", "text-processing"]
 [dependencies]
 roxmltree = "0.21"
 ttf-parser = "0.25"
+rustybuzz = { version = "0.20", optional = true }
 
 [features]
-default = ["svg"]
+default = ["svg", "shaping"]
 # SVG emission (debugging window and golden-test format). Core stays display-list only.
 svg = []
+# Text shaping via rustybuzz: kerning in multi-character token runs and the
+# `ssty` script-alternates feature. Without it, glyphs are placed by plain
+# cmap lookup + advances (correct for isolated math glyphs).
+shaping = ["dep:rustybuzz"]

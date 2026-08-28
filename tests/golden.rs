@@ -776,6 +776,32 @@ fn embellished_operators_space_and_stretch() {
 }
 
 #[test]
+fn scripts_use_ssty_alternates() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let top = layout(
+        &parse("<math><mo>&#x2032;</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let scripted = layout(
+        &parse("<math><msup><mi>f</mi><mo>&#x2032;</mo></msup></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let id = |l: &formulary::Layout, i: usize| match l.items[i] {
+        formulary::Item::Glyph { id, .. } => id,
+        _ => panic!("expected glyph"),
+    };
+    assert_ne!(
+        id(&top, 0),
+        id(&scripted, 1),
+        "script prime must swap to its ssty alternate"
+    );
+}
+
+#[test]
 fn underover_wrong_arity_errors() {
     assert!(parse("<math><mover><mi>x</mi></mover></math>").is_err());
     assert!(parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>").is_err());

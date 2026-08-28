@@ -223,6 +223,16 @@ impl<'a, 'f> Ctx<'a, 'f> {
         v.value as f32 * self.scale
     }
 
+    /// Swap in the font's `ssty` alternate in script styles.
+    fn script_glyph(&self, glyph: GlyphId) -> GlyphId {
+        if self.script_level == 0 {
+            return glyph;
+        }
+        self.font
+            .script_alternate(glyph, u16::from(self.script_level.min(2)))
+            .unwrap_or(glyph)
+    }
+
     /// Resolve a MathML length to layout units. Percentages resolve against
     /// `percent_ref` (the natural dimension for `mpadded`, zero elsewhere).
     fn resolve(&self, len: Length, percent_ref: f32) -> f32 {
@@ -1059,17 +1069,22 @@ fn dictionary_entry(text: &str, form: Form) -> (u8, u8, u8) {
     (5, 5, 0)
 }
 
-/// Per-character glyph mapping and advance placement.
-///
-/// Placeholder for real shaping (rustybuzz, with `ssty` in script styles);
-/// adequate for isolated math glyphs, which don't form clusters or ligate.
+/// A run of token text: shaped with rustybuzz when the `shaping` feature is
+/// on (kerning, `ssty` script alternates), otherwise per-character cmap
+/// lookup + advances — adequate for isolated math glyphs, which don't form
+/// clusters or ligate.
 fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
+    #[cfg(feature = "shaping")]
+    if let Some(b) = shape_text_run(ctx, text) {
+        return b;
+    }
     let mut out = MathBox::empty();
     for c in text.chars() {
         let Some(gid) = ctx.font.glyph_index(c) else {
             // No .notdef rendering yet: skip unmapped characters.
             continue;
         };
+        let gid = ctx.script_glyph(gid);
         out.items.push(Item::Glyph {
             id: gid,
             x: out.width,
@@ -1083,8 +1098,66 @@ fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
             out.descent = out.descent.max(-(ink.y_min as f32) * ctx.scale);
         }
     }
-    // A run with no ink (all spaces) still occupies the line: fall back to
-    // font-wide metrics so an empty-looking box doesn't collapse vertically.
+    finish_text_run(ctx, out)
+}
+
+/// Shape a run with rustybuzz. `ssty` is enabled in script styles so fonts
+/// can swap in script-tuned alternates (primes being the classic case).
+#[cfg(feature = "shaping")]
+fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
+    let shaper = ctx.font.shaper()?;
+    let mut buffer = rustybuzz::UnicodeBuffer::new();
+    buffer.push_str(text);
+    buffer.set_direction(rustybuzz::Direction::LeftToRight);
+    // Select the OpenType `math` script: math fonts register ssty/dtls there,
+    // and Common-script characters would otherwise resolve to DFLT.
+    buffer.set_script(rustybuzz::script::SCRIPT_MATH);
+    let mut features = Vec::new();
+    if ctx.script_level > 0 {
+        features.push(rustybuzz::Feature::new(
+            rustybuzz::ttf_parser::Tag::from_bytes(b"ssty"),
+            u32::from(ctx.script_level.min(2)),
+            ..,
+        ));
+    }
+    let shaped = rustybuzz::shape(shaper, &features, buffer);
+
+    let mut out = MathBox::empty();
+    for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+        let x = out.width + pos.x_offset as f32 * ctx.scale;
+        // HarfBuzz y offsets are y-up; the display list is y-down.
+        let y = -(pos.y_offset as f32) * ctx.scale;
+        if info.glyph_id == 0 {
+            out.width += pos.x_advance as f32 * ctx.scale;
+            continue; // unmapped: advance but draw nothing, like the fallback
+        }
+        let shaped_gid = GlyphId(info.glyph_id as u16);
+        let gid = ctx.script_glyph(shaped_gid);
+        // A substituted alternate has its own advance; the shaped advance
+        // belongs to the glyph it replaced.
+        out.width += if gid == shaped_gid {
+            pos.x_advance as f32 * ctx.scale
+        } else {
+            ctx.font.advance(gid) * ctx.scale
+        };
+        out.items.push(Item::Glyph {
+            id: gid,
+            x,
+            y,
+            size: ctx.size,
+        });
+        out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
+        if let Some(ink) = ctx.font.ink_box(gid) {
+            out.ascent = out.ascent.max(f32::from(ink.y_max) * ctx.scale - y);
+            out.descent = out.descent.max(y - f32::from(ink.y_min) * ctx.scale);
+        }
+    }
+    Some(finish_text_run(ctx, out))
+}
+
+/// A run with no ink (all spaces) still occupies the line: fall back to
+/// font-wide metrics so an empty-looking box doesn't collapse vertically.
+fn finish_text_run(ctx: &Ctx, mut out: MathBox) -> MathBox {
     if !out.items.is_empty() && out.ascent == 0.0 && out.descent == 0.0 {
         let (asc, desc) = ctx.font.line_metrics();
         out.ascent = asc * ctx.scale;
