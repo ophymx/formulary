@@ -6,8 +6,9 @@
 //! non-`<math>` root are hard errors.
 
 use crate::ast::{
-    DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs, ScriptLevel, Warning,
+    ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs, ScriptLevel, Warning,
 };
+use crate::mathvariant::{apply_variant, to_math_italic, MathVariant};
 
 /// Errors that prevent producing a tree at all. Everything else is recovered
 /// from and reported via [`MathRoot::warnings`].
@@ -55,6 +56,7 @@ pub fn parse(source: &str) -> Result<MathRoot, ParseError> {
     let children = parse_children(root, &mut warnings);
     Ok(MathRoot {
         display,
+        displaystyle: bool_attr(root, "displaystyle"),
         children,
         warnings,
     })
@@ -86,13 +88,24 @@ fn invalid(
 fn parse_node(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
     let name = node.tag_name().name();
     match name {
-        "mi" => Node::Identifier(text_content(node)),
-        "mn" => Node::Number(text_content(node)),
+        "mi" => {
+            let text = text_content(node);
+            let styled = match variant_attr(node) {
+                Some(v) => apply(&text, v),
+                // Single-char <mi> defaults to math italic.
+                None if text.chars().count() == 1 => {
+                    text.chars().map(to_math_italic).collect()
+                }
+                None => text,
+            };
+            Node::Identifier(styled)
+        }
+        "mn" => Node::Number(styled_text(node)),
         // `<ms>` renders as text wrapped in its quote characters.
         "ms" => {
             let lquote = node.attribute("lquote").unwrap_or("\"");
             let rquote = node.attribute("rquote").unwrap_or("\"");
-            Node::Text(format!("{lquote}{}{rquote}", text_content(node)))
+            Node::Text(format!("{lquote}{}{rquote}", styled_text(node)))
         }
         // `<semantics>` and legacy `<maction>` render their first child;
         // annotations and alternate actions are ignored.
@@ -150,9 +163,11 @@ fn parse_node(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
                 symmetric: bool_attr(node, "symmetric"),
                 largeop: bool_attr(node, "largeop"),
                 movablelimits: bool_attr(node, "movablelimits"),
+                minsize: length_attr(node, "minsize"),
+                maxsize: length_attr(node, "maxsize"),
             },
         },
-        "mtext" => Node::Text(text_content(node)),
+        "mtext" => Node::Text(styled_text(node)),
         "mrow" => Node::Row(parse_children(node, warnings)),
         "mfrac" => {
             let mut children = parse_children(node, warnings);
@@ -161,7 +176,11 @@ fn parse_node(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
             }
             let den = Box::new(children.pop().expect("len checked"));
             let num = Box::new(children.pop().expect("len checked"));
-            Node::Frac { num, den }
+            Node::Frac {
+                num,
+                den,
+                line_thickness: length_attr(node, "linethickness"),
+            }
         }
         "msub" | "msup" | "msubsup" => {
             let expected = if name == "msubsup" { 3 } else { 2 };
@@ -241,7 +260,19 @@ fn parse_node(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
                         .collect()
                 })
                 .collect();
-            Node::Table { rows }
+            let column_align = node
+                .attribute("columnalign")
+                .map(|s| {
+                    s.split_whitespace()
+                        .map(|w| match w {
+                            "left" => ColumnAlign::Left,
+                            "right" => ColumnAlign::Right,
+                            _ => ColumnAlign::Center,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Node::Table { rows, column_align }
         }
         "msqrt" => Node::Sqrt(parse_children(node, warnings)),
         "mspace" => Node::Space {
@@ -378,6 +409,24 @@ fn parse_multiscripts(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Nod
 /// bad `width` shouldn't kill the whole formula.
 fn length_attr(node: roxmltree::Node, name: &str) -> Option<Length> {
     node.attribute(name).and_then(parse_length)
+}
+
+/// The `mathvariant` attribute, when present and valid.
+fn variant_attr(node: roxmltree::Node) -> Option<MathVariant> {
+    node.attribute("mathvariant").and_then(MathVariant::from_attr)
+}
+
+fn apply(text: &str, v: MathVariant) -> String {
+    text.chars().map(|c| apply_variant(c, v)).collect()
+}
+
+/// Token text with any `mathvariant` styling applied.
+fn styled_text(node: roxmltree::Node) -> String {
+    let text = text_content(node);
+    match variant_attr(node) {
+        Some(v) => apply(&text, v),
+        None => text,
+    }
 }
 
 fn bool_attr(node: roxmltree::Node, name: &str) -> Option<bool> {

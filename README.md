@@ -45,19 +45,21 @@ With both off, the only dependencies are `ttf-parser` and `roxmltree`.
 
 ## Coverage
 
-Supported: token elements (`mi` `mn` `mo` `mtext` `ms`), `mrow`, `mfrac`,
-`msqrt`/`mroot`, `msub`/`msup`/`msubsup`, `munder`/`mover`/`munderover`
-(accents, movable limits), `mmultiscripts` (+ `mprescripts`/`none`),
-`mtable`/`mtr`/`mtd`, `mspace`, `mstyle`, `mpadded`, `mphantom`, `merror`,
+Supported: token elements (`mi` `mn` `mo` `mtext` `ms`) with `mathvariant`
+styling, `mrow`, `mfrac` (incl. `linethickness`, with `0` giving bar-less
+binomial stacks), `msqrt`/`mroot`, `msub`/`msup`/`msubsup`,
+`munder`/`mover`/`munderover` (accents, movable limits), `mmultiscripts`
+(+ `mprescripts`/`none`), `mtable`/`mtr`/`mtd` (`columnalign`, Core cell
+padding), `mspace`, `mstyle`, `mpadded`, `mphantom`, `merror`,
 `semantics`/`maction` (first child), deprecated `mfenced` (desugared);
 operator dictionary spacing and forms, vertically and horizontally stretchy
-operators via glyph variants *and* assembly, large operators in display
-style, italic correction, `ssty` script alternates, display/inline modes
-with full script-level and cramped-style propagation.
+operators via glyph variants *and* assembly with `minsize`/`maxsize`
+clamping, large operators in display style, italic correction, `ssty`
+script alternates, display/inline modes (`display` and `displaystyle`) with
+full script-level and cramped-style propagation.
 
-Not (yet) supported: `menclose` (not in MathML Core), `mtable` spans and
-alignment attributes, RTL math, content MathML, HTML inside token elements,
-linebreaking.
+Not (yet) supported: `menclose` (not in MathML Core), `mtable` spans, RTL
+math, content MathML, HTML inside token elements, linebreaking.
 
 ### Error handling
 

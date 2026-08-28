@@ -1015,6 +1015,182 @@ fn mfenced_desugars_to_fenced_row() {
 }
 
 #[test]
+fn golden_binomial() {
+    check_golden(
+        "binomial",
+        r#"<math><mo>(</mo><mfrac linethickness="0"><mi>n</mi><mi>k</mi></mfrac><mo>)</mo></math>"#,
+    );
+}
+
+#[test]
+fn linethickness_variants() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    // linethickness="0": no bar at all, parts still stacked.
+    let binom = layout(
+        &parse(r#"<math><mfrac linethickness="0"><mi>n</mi><mi>k</mi></mfrac></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(binom
+        .items
+        .iter()
+        .all(|i| matches!(i, formulary::Item::Glyph { .. })));
+    let g = glyphs(&binom);
+    assert_eq!(g.len(), 2);
+    assert!(g[0].1 < 0.0 && g[1].1 > 0.0, "still a vertical stack");
+
+    // A thick bar is thicker than the default.
+    let rule_h = |l: &formulary::Layout| {
+        l.items
+            .iter()
+            .find_map(|i| match *i {
+                formulary::Item::Rule { h, .. } => Some(h),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let default = layout(
+        &parse("<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let thick = layout(
+        &parse(r#"<math><mfrac linethickness="4px"><mn>1</mn><mn>2</mn></mfrac></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((rule_h(&thick) - 4.0).abs() < 1e-3);
+    assert!(rule_h(&thick) > rule_h(&default));
+}
+
+#[test]
+fn displaystyle_attribute_on_math() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let attr = layout(
+        &parse(r#"<math displaystyle="true"><mfrac><mn>1</mn><mn>2</mn></mfrac></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let block = layout(
+        &parse(r#"<math display="block"><mfrac><mn>1</mn><mn>2</mn></mfrac></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(attr, block);
+    // And the reverse: block math demoted to text style.
+    let demoted = layout(
+        &parse(r#"<math display="block" displaystyle="false"><mfrac><mn>1</mn><mn>2</mn></mfrac></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let inline = layout(
+        &parse("<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(demoted, inline);
+}
+
+#[test]
+fn mathvariant_maps_tokens() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let gid = |markup: &str| {
+        let laid = layout(&parse(markup).unwrap(), &font, &opts);
+        match laid.items[0] {
+            formulary::Item::Glyph { id, .. } => id,
+            _ => panic!("expected glyph"),
+        }
+    };
+
+    // mathvariant="normal" suppresses the single-char auto-italic.
+    assert_eq!(
+        gid(r#"<math><mi mathvariant="normal">x</mi></math>"#),
+        gid("<math><mtext>x</mtext></math>")
+    );
+    // bold and double-struck map into the styled blocks.
+    let plain = gid("<math><mtext>x</mtext></math>");
+    let italic = gid("<math><mi>x</mi></math>");
+    let bold = gid(r#"<math><mi mathvariant="bold">x</mi></math>"#);
+    assert!(bold != plain && bold != italic);
+    let bb_r = gid(r#"<math><mi mathvariant="double-struck">R</mi></math>"#);
+    let literal_bb_r = gid("<math><mi>&#x211D;</mi></math>");
+    assert_eq!(bb_r, literal_bb_r, "R maps through the Letterlike hole to ℝ");
+    // Digits exist in bold but not italic: italic leaves them alone.
+    assert_eq!(
+        gid(r#"<math><mn mathvariant="italic">5</mn></math>"#),
+        gid("<math><mn>5</mn></math>")
+    );
+}
+
+#[test]
+fn minsize_maxsize_clamp_stretching() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    // minsize forces a tall fence even around short content.
+    let forced = layout(
+        &parse(r#"<math><mo minsize="3em">(</mo><mi>x</mi><mo minsize="3em">)</mo></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let natural = layout(
+        &parse("<math><mo>(</mo><mi>x</mi><mo>)</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(forced.ascent + forced.descent >= 44.0); // ~3em at 16px, minus slack
+    assert!(forced.ascent + forced.descent > 1.5 * (natural.ascent + natural.descent));
+
+    // maxsize keeps a fence small around tall content.
+    let capped = layout(
+        &parse(r#"<math><mo maxsize="1em">(</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo maxsize="1em">)</mo></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let uncapped = layout(
+        &parse("<math><mo>(</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>)</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    // The capped fence must not drive the box taller than the fraction does.
+    let frac = layout(
+        &parse("<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(capped.ascent + capped.descent <= frac.ascent + frac.descent + 1e-3);
+    assert!(uncapped.ascent + uncapped.descent > capped.ascent + capped.descent);
+}
+
+#[test]
+fn columnalign_aligns_cells() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let markup = |align: &str| {
+        format!(
+            r#"<math><mtable columnalign="{align}"><mtr><mtd><mi>x</mi></mtd></mtr><mtr><mtd><mn>100</mn></mtd></mtr></mtable></math>"#
+        )
+    };
+    let x_of = |align: &str| glyphs(&layout(&parse(&markup(align)).unwrap(), &font, &opts))[0].0;
+    let left = x_of("left");
+    let center = x_of("center");
+    let right = x_of("right");
+    assert!(left < center && center < right);
+}
+
+#[test]
 fn underover_wrong_arity_warns() {
     assert!(!parse("<math><mover><mi>x</mi></mover></math>").unwrap().warnings.is_empty());
     assert!(!parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>")

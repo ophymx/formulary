@@ -32,6 +32,15 @@ pub enum Length {
     Percent(f32),
 }
 
+/// Horizontal alignment of cells within a table column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColumnAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
 /// An operator's syntactic position, which selects its operator-dictionary
 /// entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +61,10 @@ pub struct OperatorAttrs {
     pub symmetric: Option<bool>,
     pub largeop: Option<bool>,
     pub movablelimits: Option<bool>,
+    /// Clamp on the stretched size. Percentages resolve against the
+    /// unstretched glyph's size.
+    pub minsize: Option<Length>,
+    pub maxsize: Option<Length>,
 }
 
 /// A `scriptlevel` attribute value: absolute, or relative with an explicit
@@ -66,6 +79,9 @@ pub enum ScriptLevel {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MathRoot {
     pub display: DisplayMode,
+    /// The `displaystyle` attribute, overriding the default implied by
+    /// `display` (block → true, inline → false).
+    pub displaystyle: Option<bool>,
     /// The children of `<math>`, treated as an anonymous `mrow`.
     pub children: Vec<Node>,
     /// Recoveries applied during parsing (MathML Core's error handling lays
@@ -90,7 +106,8 @@ pub enum Warning {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     /// `<mi>` — identifier. Single characters default to math-italic per
-    /// MathML Core; the mapping happens at layout time.
+    /// MathML Core; the parser applies that mapping (and any `mathvariant`),
+    /// so the string holds final code points.
     Identifier(String),
     /// `<mn>` — numeric literal.
     Number(String),
@@ -106,7 +123,13 @@ pub enum Node {
     /// `<mrow>` — horizontal grouping.
     Row(Vec<Node>),
     /// `<mfrac>` — numerator over denominator. Exactly two children.
-    Frac { num: Box<Node>, den: Box<Node> },
+    /// `line_thickness` overrides the font's fraction rule thickness; zero
+    /// yields a bar-less stack (the binomial-coefficient idiom).
+    Frac {
+        num: Box<Node>,
+        den: Box<Node>,
+        line_thickness: Option<Length>,
+    },
     /// `<msub>`, `<msup>`, or `<msubsup>`, normalized to one shape: a base
     /// with an optional subscript and/or superscript (at least one present).
     Scripts {
@@ -153,9 +176,13 @@ pub enum Node {
     },
     /// `<mtable>` — rows of `<mtr>` containing `<mtd>` cells. Each cell is
     /// its children as an implied `mrow`. Rows may be ragged (missing
-    /// trailing cells render empty). Spans and alignment attributes are not
-    /// supported yet.
-    Table { rows: Vec<Vec<Node>> },
+    /// trailing cells render empty). Spans are not supported yet.
+    Table {
+        rows: Vec<Vec<Node>>,
+        /// Per-column alignment from `columnalign`; the last entry repeats
+        /// for further columns. Empty means center.
+        column_align: Vec<ColumnAlign>,
+    },
     /// `<mpadded>` — overrides the reported box of its content and can shift
     /// the content within it. `None` keeps the natural value.
     Padded {

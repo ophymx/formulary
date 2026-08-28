@@ -11,9 +11,8 @@
 //! Layout is cheap and resolution-independent: re-run it when the target font
 //! size changes rather than scaling a previous result.
 
-use crate::ast::{DisplayMode, Form, Length, MathRoot, Node, ScriptLevel};
+use crate::ast::{ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, ScriptLevel};
 use crate::font::{GlyphId, MathFont, Stretched};
-use crate::mathvariant::to_math_italic;
 use crate::opdict;
 
 /// Caller-supplied layout parameters.
@@ -70,9 +69,10 @@ pub fn layout(root: &MathRoot, font: &MathFont, options: &LayoutOptions) -> Layo
     let ctx = Ctx::new(
         font,
         options.font_size,
-        // Per MathML Core, display="block" starts in displaystyle; inline
-        // math starts in text style.
-        root.display == DisplayMode::Block,
+        // Per MathML Core, display="block" starts in displaystyle and inline
+        // math in text style, unless the displaystyle attribute overrides.
+        root.displaystyle
+            .unwrap_or(root.display == DisplayMode::Block),
     );
     let b = layout_row(&ctx, &root.children);
     Layout {
@@ -268,20 +268,18 @@ impl MathBox {
 
 fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
     match node {
-        Node::Identifier(text) => {
-            let mut chars = text.chars();
-            match (chars.next(), chars.next()) {
-                // Single-char <mi> defaults to math italic.
-                (Some(c), None) => layout_text_run(ctx, &to_math_italic(c).to_string()),
-                _ => layout_text_run(ctx, text),
-            }
-        }
+        // The parser already applied mathvariant / auto-italic mappings.
+        Node::Identifier(text) => layout_text_run(ctx, text),
         // An <mo> reached outside row context (e.g. as a script base) gets no
         // form-dependent spacing; the surrounding row handles spacing.
         Node::Operator { text, .. } => layout_text_run(ctx, text),
         Node::Number(text) | Node::Text(text) => layout_text_run(ctx, text),
         Node::Row(children) => layout_row(ctx, children),
-        Node::Frac { num, den } => layout_frac(ctx, num, den),
+        Node::Frac {
+            num,
+            den,
+            line_thickness,
+        } => layout_frac(ctx, num, den, *line_thickness),
         Node::Scripts { base, sub, sup } => {
             layout_scripts(ctx, base, sub.as_deref(), sup.as_deref())
         }
@@ -300,7 +298,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
             accent.unwrap_or(false),
             accent_under.unwrap_or(false),
         ),
-        Node::Table { rows } => layout_table(ctx, rows),
+        Node::Table { rows, column_align } => layout_table(ctx, rows, column_align),
         Node::Sqrt(children) => {
             let content = layout_row(&ctx.cramped_child(), children);
             layout_radical(ctx, content, None)
@@ -365,11 +363,12 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
 }
 
 /// `<mtable>`: cells baseline-aligned within each row, columns sized to
-/// their widest cell with cells centered, and the whole table vertically
-/// centered on the math axis. Cells lay out in text style (displaystyle
-/// off), per MathML Core. Spacing uses the classic MathML defaults
-/// (columnspacing 0.8 em, rowspacing 1.0 ex).
-fn layout_table(ctx: &Ctx, rows: &[Vec<Node>]) -> MathBox {
+/// their widest cell, and the whole table vertically centered on the math
+/// axis. Cells lay out in text style (displaystyle off), per MathML Core,
+/// and carry Core's UA-stylesheet cell padding (0.4 em / 0.5 ex per side).
+/// `columnalign` sets per-column alignment (default center; last entry
+/// repeats).
+fn layout_table(ctx: &Ctx, rows: &[Vec<Node>], column_align: &[ColumnAlign]) -> MathBox {
     let cell_ctx = ctx.styled_child(Some(false), None);
     let cells: Vec<Vec<MathBox>> = rows
         .iter()
@@ -392,12 +391,13 @@ fn layout_table(ctx: &Ctx, rows: &[Vec<Node>]) -> MathBox {
         })
         .collect();
 
-    let col_gap = 0.8 * ctx.size;
-    let row_gap = ctx.font.x_height() * ctx.scale;
-    let total_width = col_widths.iter().sum::<f32>()
-        + col_gap * (n_cols.saturating_sub(1)) as f32;
+    // Core's mtd padding; adjacent cells' padding adds up to the classic
+    // 0.8 em / 1.0 ex inter-cell spacing, plus outer edge padding.
+    let hpad = 0.4 * ctx.size;
+    let vpad = 0.5 * ctx.font.x_height() * ctx.scale;
+    let total_width = col_widths.iter().sum::<f32>() + 2.0 * hpad * n_cols as f32;
     let total_height = row_extents.iter().map(|(a, d)| a + d).sum::<f32>()
-        + row_gap * (rows.len().saturating_sub(1)) as f32;
+        + 2.0 * vpad * rows.len() as f32;
 
     // Center the table vertically on the math axis; a table shorter than
     // twice the axis height sits on the baseline instead of dipping below.
@@ -410,19 +410,32 @@ fn layout_table(ctx: &Ctx, rows: &[Vec<Node>]) -> MathBox {
         ..MathBox::empty()
     };
 
+    let align_of = |j: usize| -> ColumnAlign {
+        column_align
+            .get(j)
+            .or(column_align.last())
+            .copied()
+            .unwrap_or_default()
+    };
     let mut y = -out.ascent;
     for (row, &(row_ascent, row_descent)) in cells.into_iter().zip(&row_extents) {
-        let baseline = y + row_ascent;
+        let baseline = y + vpad + row_ascent;
         let mut x = 0.0;
         for (j, cell) in row.into_iter().enumerate() {
-            let dx = x + (col_widths[j] - cell.width) / 2.0;
+            let slack = col_widths[j] - cell.width;
+            let dx = x + hpad
+                + match align_of(j) {
+                    ColumnAlign::Left => 0.0,
+                    ColumnAlign::Center => slack / 2.0,
+                    ColumnAlign::Right => slack,
+                };
             for mut item in cell.items {
                 item.translate(dx, baseline);
                 out.items.push(item);
             }
-            x += col_widths[j] + col_gap;
+            x += col_widths[j] + 2.0 * hpad;
         }
-        y = baseline + row_descent + row_gap;
+        y = baseline + row_descent + vpad;
     }
     out
 }
@@ -636,6 +649,49 @@ fn layout_underover(
         let dx = (width - ub.width) / 2.0;
         for mut item in ub.items {
             item.translate(dx, shift_down);
+            out.items.push(item);
+        }
+    }
+    out
+}
+
+/// Bar-less numerator-over-denominator (`linethickness="0"`), per the
+/// OpenType MATH stack constants: preferred shifts, then both parts pushed
+/// apart symmetrically until StackGapMin holds.
+fn layout_stack(ctx: &Ctx, num_box: MathBox, den_box: MathBox) -> MathBox {
+    let c = ctx.font.constants();
+    let (mut num_shift, mut den_shift, gap_min) = if ctx.display_style {
+        (
+            ctx.constant(c.stack_top_display_style_shift_up()),
+            ctx.constant(c.stack_bottom_display_style_shift_down()),
+            ctx.constant(c.stack_display_style_gap_min()),
+        )
+    } else {
+        (
+            ctx.constant(c.stack_top_shift_up()),
+            ctx.constant(c.stack_bottom_shift_down()),
+            ctx.constant(c.stack_gap_min()),
+        )
+    };
+    let gap = (num_shift - num_box.descent) + (den_shift - den_box.ascent);
+    if gap < gap_min {
+        let bump = (gap_min - gap) / 2.0;
+        num_shift += bump;
+        den_shift += bump;
+    }
+
+    let width = num_box.width.max(den_box.width);
+    let mut out = MathBox {
+        width,
+        ascent: num_shift + num_box.ascent,
+        descent: den_shift + den_box.descent,
+        italic_correction: 0.0,
+        items: Vec::with_capacity(num_box.items.len() + den_box.items.len()),
+    };
+    for (bx, dy) in [(num_box, -num_shift), (den_box, den_shift)] {
+        let dx = (width - bx.width) / 2.0;
+        for mut item in bx.items {
+            item.translate(dx, dy);
             out.items.push(item);
         }
     }
@@ -858,14 +914,26 @@ fn layout_scripts_on(
 /// `<mfrac>` per MathML Core §3.3.2 / the OpenType MATH fraction constants:
 /// numerator shifted up and denominator down by at least the font's preferred
 /// shifts, pushed further apart if the min gaps to the rule demand it; the
-/// rule is centered on the math axis.
-fn layout_frac(ctx: &Ctx, num: &Node, den: &Node) -> MathBox {
+/// rule is centered on the math axis. `linethickness="0"` switches to the
+/// bar-less stack layout (binomial coefficients), using the Stack constants.
+fn layout_frac(
+    ctx: &Ctx,
+    num: &Node,
+    den: &Node,
+    line_thickness: Option<Length>,
+) -> MathBox {
     let num_box = layout_node(&ctx.frac_child(false), num);
     let den_box = layout_node(&ctx.frac_child(true), den);
 
     let c = ctx.font.constants();
     let axis = ctx.constant(c.axis_height());
-    let thickness = ctx.constant(c.fraction_rule_thickness());
+    let default_thickness = ctx.constant(c.fraction_rule_thickness());
+    let thickness = line_thickness
+        .map(|l| ctx.resolve(l, default_thickness).max(0.0))
+        .unwrap_or(default_thickness);
+    if thickness == 0.0 {
+        return layout_stack(ctx, num_box, den_box);
+    }
     let (shift_up, shift_down, gap_above, gap_below) = if ctx.display_style {
         (
             ctx.constant(c.fraction_numerator_display_style_shift_up()),
@@ -1007,7 +1075,20 @@ fn layout_embellished_stretchy(
 ) -> MathBox {
     match node {
         Node::Operator { text, .. } => match single_char(text) {
-            Some(c) => layout_stretchy_operator(ctx, c, symmetric, max_ascent, max_descent),
+            Some(c) => {
+                let Node::Operator { attrs, .. } = node else {
+                    unreachable!("matched Operator above")
+                };
+                layout_stretchy_operator(
+                    ctx,
+                    c,
+                    symmetric,
+                    attrs.minsize,
+                    attrs.maxsize,
+                    max_ascent,
+                    max_descent,
+                )
+            }
             None => layout_node(ctx, node),
         },
         Node::Scripts { base, sub, sup } => {
@@ -1132,22 +1213,43 @@ fn layout_operator_base(ctx: &Ctx, node: &Node) -> MathBox {
 
 /// A vertically-stretchy operator covering the row's extent: symmetric ones
 /// (fences) grow equally about the math axis, others cover ascent + descent
-/// directly. Excess from a too-tall variant is centered over the target.
+/// directly. minsize/maxsize clamp the target (percentages resolve against
+/// the unstretched glyph). Excess from a too-tall variant is centered over
+/// the target.
 fn layout_stretchy_operator(
     ctx: &Ctx,
     c: char,
     symmetric: bool,
+    minsize: Option<Length>,
+    maxsize: Option<Length>,
     max_ascent: f32,
     max_descent: f32,
 ) -> MathBox {
     let glyph = ctx.font.glyph_index(c).expect("checked by caller");
     let axis = ctx.constant(ctx.font.constants().axis_height());
-    let (target, target_ascent) = if symmetric {
+    let (mut target, mut target_ascent) = if symmetric {
         let above = (max_ascent - axis).max(max_descent + axis).max(0.0);
         (2.0 * above, axis + above)
     } else {
         ((max_ascent + max_descent).max(0.0), max_ascent)
     };
+    if minsize.is_some() || maxsize.is_some() {
+        let natural = ctx
+            .font
+            .ink_box(glyph)
+            .map_or(0.0, |ink| f32::from(ink.y_max - ink.y_min) * ctx.scale);
+        let clamped = target
+            .max(minsize.map_or(0.0, |l| ctx.resolve(l, natural)))
+            .min(maxsize.map_or(f32::INFINITY, |l| ctx.resolve(l, natural)))
+            .max(0.0);
+        if symmetric {
+            target_ascent = axis + clamped / 2.0;
+        } else {
+            // Distribute the size change evenly about the covered range.
+            target_ascent += (clamped - target) / 2.0;
+        }
+        target = clamped;
+    }
     if target <= 0.0 {
         // Nothing to cover (row of only stretchy operators): natural glyph.
         return layout_text_run(ctx, &c.to_string());
