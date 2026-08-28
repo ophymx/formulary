@@ -95,6 +95,32 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
             let num = Box::new(children.pop().expect("len checked"));
             Ok(Node::Frac { num, den })
         }
+        "msub" | "msup" | "msubsup" => {
+            let expected = if name == "msubsup" { 3 } else { 2 };
+            let mut children = parse_children(node)?;
+            if children.len() != expected {
+                return Err(ParseError::WrongArity {
+                    element: match name {
+                        "msub" => "msub",
+                        "msup" => "msup",
+                        _ => "msubsup",
+                    },
+                    expected,
+                    found: children.len(),
+                });
+            }
+            let mut rest = children.split_off(1);
+            let base = Box::new(children.pop().expect("len checked"));
+            let (sub, sup) = match name {
+                "msub" => (Some(Box::new(rest.remove(0))), None),
+                "msup" => (None, Some(Box::new(rest.remove(0)))),
+                _ => (
+                    Some(Box::new(rest.remove(0))),
+                    Some(Box::new(rest.remove(0))),
+                ),
+            };
+            Ok(Node::Scripts { base, sub, sup })
+        }
         other => Err(ParseError::Unsupported {
             element: other.to_string(),
         }),

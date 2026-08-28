@@ -40,4 +40,11 @@ pub enum Node {
     Row(Vec<Node>),
     /// `<mfrac>` — numerator over denominator. Exactly two children.
     Frac { num: Box<Node>, den: Box<Node> },
+    /// `<msub>`, `<msup>`, or `<msubsup>`, normalized to one shape: a base
+    /// with an optional subscript and/or superscript (at least one present).
+    Scripts {
+        base: Box<Node>,
+        sub: Option<Box<Node>>,
+        sup: Option<Box<Node>>,
+    },
 }

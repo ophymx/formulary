@@ -149,6 +149,90 @@ fn golden_mfrac_display() {
 }
 
 #[test]
+fn golden_msup() {
+    check_golden("msup", "<math><msup><mi>x</mi><mn>2</mn></msup></math>");
+}
+
+#[test]
+fn golden_msubsup() {
+    check_golden(
+        "msubsup",
+        "<math><msubsup><mi>x</mi><mi>i</mi><mn>2</mn></msubsup><mo>+</mo><msub><mi>y</mi><mn>0</mn></msub></math>",
+    );
+}
+
+fn glyphs(laid: &formulary::Layout) -> Vec<(f32, f32, f32)> {
+    laid.items
+        .iter()
+        .filter_map(|i| match *i {
+            formulary::Item::Glyph { x, y, size, .. } => Some((x, y, size)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn scripts_geometry_sane() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    let sup = layout(
+        &parse("<math><msup><mi>x</mi><mn>2</mn></msup></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&sup);
+    assert_eq!(g.len(), 2);
+    let (base, script) = (g[0], g[1]);
+    assert!(script.1 < 0.0, "superscript baseline must sit above the main one");
+    assert!(script.2 < base.2, "superscript must drop to script size");
+    assert!(script.0 > base.0, "superscript attaches after the base");
+    let bare = layout(&parse("<math><mi>x</mi></math>").unwrap(), &font, &opts);
+    assert!(sup.ascent > bare.ascent);
+    assert!(sup.width > bare.width);
+
+    let sub = layout(
+        &parse("<math><msub><mi>x</mi><mi>i</mi></msub></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&sub);
+    assert_eq!(g.len(), 2);
+    assert!(g[1].1 > 0.0, "subscript baseline must sit below the main one");
+    assert!(sub.descent > bare.descent);
+
+    // msubsup: sub and sup share their x position and stay apart vertically.
+    let both = layout(
+        &parse("<math><msubsup><mi>x</mi><mi>i</mi><mn>2</mn></msubsup></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&both);
+    assert_eq!(g.len(), 3);
+    // Display-list order is base, superscript, subscript.
+    let (sup_g, sub_g) = (g[1], g[2]);
+    assert_eq!(sub_g.0, sup_g.0);
+    assert!(sup_g.1 < 0.0 && sub_g.1 > 0.0);
+
+    // Nested superscripts reach script-script size, smaller than script size.
+    let nested = layout(
+        &parse("<math><msup><mi>x</mi><msup><mn>2</mn><mn>2</mn></msup></msup></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&nested);
+    assert_eq!(g.len(), 3);
+    assert!(g[2].2 < g[1].2 && g[1].2 < g[0].2);
+}
+
+#[test]
+fn scripts_wrong_arity_errors() {
+    assert!(parse("<math><msup><mi>x</mi></msup></math>").is_err());
+    assert!(parse("<math><msubsup><mi>x</mi><mn>1</mn></msubsup></math>").is_err());
+}
+
+#[test]
 fn mfrac_geometry_sane() {
     let data = stix();
     let font = MathFont::new(&data, 0).unwrap();

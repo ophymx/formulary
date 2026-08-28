@@ -95,8 +95,7 @@ struct Ctx<'a, 'f> {
     /// gaps. Off inside fraction parts and scripts.
     display_style: bool,
     /// Cramped styles (under bars, in subscripts/denominators) raise
-    /// superscripts less. Unused until scripts land, threaded now.
-    #[allow(dead_code)]
+    /// superscripts less.
     cramped: bool,
     /// Font size at the current script level, stamped on emitted glyphs.
     size: f32,
@@ -152,6 +151,18 @@ impl<'a, 'f> Ctx<'a, 'f> {
         Ctx::derive(self.font, self.base_size, level, false, self.cramped || cramped)
     }
 
+    /// Child context for a subscript or superscript: script level rises,
+    /// displaystyle switches off. Subscripts are additionally cramped.
+    fn script_child(&self, cramped: bool) -> Self {
+        Ctx::derive(
+            self.font,
+            self.base_size,
+            self.script_level.saturating_add(1),
+            false,
+            self.cramped || cramped,
+        )
+    }
+
     /// A MATH constant, converted from design units to output units at this
     /// context's scale.
     fn constant(&self, v: ttf_parser::math::MathValue) -> f32 {
@@ -194,7 +205,97 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
         }
         Node::Row(children) => layout_row(ctx, children),
         Node::Frac { num, den } => layout_frac(ctx, num, den),
+        Node::Scripts { base, sub, sup } => {
+            layout_scripts(ctx, base, sub.as_deref(), sup.as_deref())
+        }
     }
+}
+
+/// `<msub>`/`<msup>`/`<msubsup>` per the OpenType MATH script constants
+/// (the TeX Appendix G rules 18a–f recast in font terms).
+///
+/// Italic correction of the base is not yet applied to the superscript
+/// offset; that lands together with per-glyph MathGlyphInfo access.
+fn layout_scripts(ctx: &Ctx, base: &Node, sub: Option<&Node>, sup: Option<&Node>) -> MathBox {
+    let base_box = layout_node(ctx, base);
+    let sub_box = sub.map(|n| layout_node(&ctx.script_child(true), n));
+    let sup_box = sup.map(|n| layout_node(&ctx.script_child(false), n));
+
+    let c = ctx.font.constants();
+
+    // Superscript shift above the baseline (u in TeX terms).
+    let mut sup_shift = 0.0_f32;
+    if let Some(s) = &sup_box {
+        let preferred = if ctx.cramped {
+            ctx.constant(c.superscript_shift_up_cramped())
+        } else {
+            ctx.constant(c.superscript_shift_up())
+        };
+        sup_shift = preferred
+            // Don't drop the script baseline too far below the base's top.
+            .max(base_box.ascent - ctx.constant(c.superscript_baseline_drop_max()))
+            // Keep the superscript's bottom ink above SuperscriptBottomMin.
+            .max(ctx.constant(c.superscript_bottom_min()) + s.descent);
+    }
+
+    // Subscript shift below the baseline (v in TeX terms).
+    let mut sub_shift = 0.0_f32;
+    if let Some(s) = &sub_box {
+        sub_shift = ctx
+            .constant(c.subscript_shift_down())
+            // Hang the script baseline at least this far below the base's bottom.
+            .max(base_box.descent + ctx.constant(c.subscript_baseline_drop_min()))
+            // Keep the subscript's top ink below SubscriptTopMax.
+            .max(s.ascent - ctx.constant(c.subscript_top_max()));
+    }
+
+    // With both scripts, keep them apart: grow the gap first by raising the
+    // superscript (up to SuperscriptBottomMaxWithSubscript), then by pushing
+    // the subscript down.
+    if let (Some(sb), Some(sp)) = (&sub_box, &sup_box) {
+        let gap = (sup_shift - sp.descent) + (sub_shift - sb.ascent);
+        let mut deficit = ctx.constant(c.sub_superscript_gap_min()) - gap;
+        if deficit > 0.0 {
+            let headroom = ctx.constant(c.superscript_bottom_max_with_subscript())
+                - (sup_shift - sp.descent);
+            if headroom > 0.0 {
+                let up = deficit.min(headroom);
+                sup_shift += up;
+                deficit -= up;
+            }
+            sub_shift += deficit.max(0.0);
+        }
+    }
+
+    let script_x = base_box.width;
+    let script_width = sub_box
+        .as_ref()
+        .map_or(0.0, |b| b.width)
+        .max(sup_box.as_ref().map_or(0.0, |b| b.width));
+
+    let mut out = MathBox {
+        width: script_x + script_width + ctx.constant(c.space_after_script()),
+        ascent: base_box.ascent,
+        descent: base_box.descent,
+        items: base_box.items,
+    };
+    if let Some(s) = sup_box {
+        out.ascent = out.ascent.max(sup_shift + s.ascent);
+        out.descent = out.descent.max(s.descent - sup_shift);
+        for mut item in s.items {
+            item.translate(script_x, -sup_shift);
+            out.items.push(item);
+        }
+    }
+    if let Some(s) = sub_box {
+        out.ascent = out.ascent.max(s.ascent - sub_shift);
+        out.descent = out.descent.max(sub_shift + s.descent);
+        for mut item in s.items {
+            item.translate(script_x, sub_shift);
+            out.items.push(item);
+        }
+    }
+    out
 }
 
 /// `<mfrac>` per MathML Core §3.3.2 / the OpenType MATH fraction constants:
