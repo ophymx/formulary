@@ -210,9 +210,11 @@ fn scripts_geometry_sane() {
     );
     let g = glyphs(&both);
     assert_eq!(g.len(), 3);
-    // Display-list order is base, superscript, subscript.
+    // Display-list order is base, superscript, subscript. The subscript
+    // tucks left of the superscript by the base's italic correction.
     let (sup_g, sub_g) = (g[1], g[2]);
-    assert_eq!(sub_g.0, sup_g.0);
+    assert!(sub_g.0 <= sup_g.0);
+    assert!(sup_g.0 - sub_g.0 < 1.0, "italic x has only a slight slant");
     assert!(sup_g.1 < 0.0 && sub_g.1 > 0.0);
 
     // Nested superscripts reach script-script size, smaller than script size.
@@ -698,6 +700,79 @@ fn horizontal_arrow_stretches_over_base() {
     );
     assert!((wide.width - base_row.width).abs() < 1e-3);
     assert!(wide.width > narrow.width * 2.0);
+}
+
+#[test]
+fn golden_integral_bounds() {
+    check_golden(
+        "integral_bounds",
+        r#"<math display="block"><msubsup><mo>&#x222B;</mo><mn>0</mn><mn>1</mn></msubsup><mi>x</mi><mspace width="0.17em"/><mi>d</mi><mi>x</mi></math>"#,
+    );
+}
+
+#[test]
+fn italic_correction_tucks_integral_bounds() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let laid = layout(
+        &parse(r#"<math display="block"><msubsup><mo>&#x222B;</mo><mn>0</mn><mn>1</mn></msubsup></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&laid);
+    assert_eq!(g.len(), 3, "integral, superscript, subscript");
+    let (sup, sub) = (g[1], g[2]);
+    // The big ∫ is heavily slanted: the lower bound tucks well left of the
+    // upper bound.
+    assert!(
+        sup.0 - sub.0 > 2.0,
+        "expected a pronounced tuck, got {}",
+        sup.0 - sub.0
+    );
+}
+
+#[test]
+fn embellished_operators_space_and_stretch() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 18.0 }; // 1/18 em == 1 unit
+
+    // Spacing: an msup-wrapped '+' spaces like a bare '+' (4/18 em per side).
+    let wrapped = layout(
+        &parse("<math><mi>a</mi><msup><mo>+</mo><mn>1</mn></msup><mi>b</mi></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let text_wrapped = layout(
+        &parse("<math><mi>a</mi><msup><mtext>+</mtext><mn>1</mn></msup><mi>b</mi></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((wrapped.width - text_wrapped.width - 8.0).abs() < 1e-3);
+
+    // Stretching: a squared closing paren still stretches over the fraction.
+    let laid = layout(
+        &parse("<math><mo>(</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><msup><mo>)</mo><mn>2</mn></msup></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let frac_alone = layout(
+        &parse("<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    // Both fences (first and second-to-last glyphs) cover the fraction.
+    let g = glyphs(&laid);
+    let open = g[0];
+    assert!(laid.ascent >= frac_alone.ascent - 1e-3);
+    // The open and close fences are the same stretched glyph at mirrored
+    // heights; the close one sits inside the msup, before its superscript.
+    let close = g[g.len() - 2];
+    assert!((open.1 - close.1).abs() < 1e-3, "fences share vertical placement");
 }
 
 #[test]

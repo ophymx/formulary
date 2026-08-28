@@ -177,6 +177,19 @@ impl<'a> MathFont<'a> {
         None
     }
 
+    /// Italic correction of a glyph in design units (0 when absent): how far
+    /// the glyph's ink slants past its advance, used to attach superscripts
+    /// (add) and subscripts (subtract) around slanted glyphs.
+    pub(crate) fn italic_correction(&self, glyph: GlyphId) -> f32 {
+        self.face
+            .tables()
+            .math
+            .and_then(|m| m.glyph_info)
+            .and_then(|gi| gi.italic_corrections)
+            .and_then(|ic| ic.get(glyph))
+            .map_or(0.0, |v| f32::from(v.value))
+    }
+
     /// x-height in design units, with a common fallback when the OS/2 table
     /// doesn't provide one.
     pub(crate) fn x_height(&self) -> f32 {

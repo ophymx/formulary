@@ -238,21 +238,21 @@ impl<'a, 'f> Ctx<'a, 'f> {
 
 /// Intermediate box; same shape as `Layout` but items are in box-local
 /// coordinates (baseline at y = 0, left edge at x = 0).
+#[derive(Default)]
 struct MathBox {
     width: f32,
     ascent: f32,
     descent: f32,
+    /// Italic correction of the box's trailing glyph (glyph runs and large
+    /// operators; zero for composite constructs), consumed by script
+    /// attachment.
+    italic_correction: f32,
     items: Vec<Item>,
 }
 
 impl MathBox {
     fn empty() -> Self {
-        MathBox {
-            width: 0.0,
-            ascent: 0.0,
-            descent: 0.0,
-            items: Vec::new(),
-        }
+        Self::default()
     }
 }
 
@@ -306,6 +306,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
             width: width.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0),
             ascent: height.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0),
             descent: depth.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0),
+            italic_correction: 0.0,
             items: Vec::new(),
         },
         Node::Styled {
@@ -340,6 +341,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
                 descent: depth
                     .map_or(natural.descent, |l| ctx.resolve(l, natural.descent))
                     .max(0.0),
+                italic_correction: natural.italic_correction,
                 items: natural.items,
             };
             for item in &mut out.items {
@@ -572,6 +574,17 @@ fn layout_underover(
 /// offset; that lands together with per-glyph MathGlyphInfo access.
 fn layout_scripts(ctx: &Ctx, base: &Node, sub: Option<&Node>, sup: Option<&Node>) -> MathBox {
     let base_box = layout_operator_base(ctx, base);
+    layout_scripts_on(ctx, base_box, sub, sup)
+}
+
+/// Script attachment to an already-laid base (shared with embellished
+/// stretchy operators, whose base is stretched before scripts attach).
+fn layout_scripts_on(
+    ctx: &Ctx,
+    base_box: MathBox,
+    sub: Option<&Node>,
+    sup: Option<&Node>,
+) -> MathBox {
     let sub_box = sub.map(|n| layout_node(&ctx.script_child(true), n));
     let sup_box = sup.map(|n| layout_node(&ctx.script_child(false), n));
 
@@ -621,23 +634,28 @@ fn layout_scripts(ctx: &Ctx, base: &Node, sub: Option<&Node>, sup: Option<&Node>
         }
     }
 
-    let script_x = base_box.width;
-    let script_width = sub_box
+    // Superscripts attach at the full advance; subscripts tuck left by the
+    // base's italic correction (the classic ∫ lower-limit tuck).
+    let sup_x = base_box.width;
+    let sub_x = (base_box.width - base_box.italic_correction).max(0.0);
+    let end = sub_box
         .as_ref()
-        .map_or(0.0, |b| b.width)
-        .max(sup_box.as_ref().map_or(0.0, |b| b.width));
+        .map_or(0.0, |b| sub_x + b.width)
+        .max(sup_box.as_ref().map_or(0.0, |b| sup_x + b.width))
+        .max(base_box.width);
 
     let mut out = MathBox {
-        width: script_x + script_width + ctx.constant(c.space_after_script()),
+        width: end + ctx.constant(c.space_after_script()),
         ascent: base_box.ascent,
         descent: base_box.descent,
+        italic_correction: 0.0,
         items: base_box.items,
     };
     if let Some(s) = sup_box {
         out.ascent = out.ascent.max(sup_shift + s.ascent);
         out.descent = out.descent.max(s.descent - sup_shift);
         for mut item in s.items {
-            item.translate(script_x, -sup_shift);
+            item.translate(sup_x, -sup_shift);
             out.items.push(item);
         }
     }
@@ -645,7 +663,7 @@ fn layout_scripts(ctx: &Ctx, base: &Node, sub: Option<&Node>, sup: Option<&Node>
         out.ascent = out.ascent.max(s.ascent - sub_shift);
         out.descent = out.descent.max(sub_shift + s.descent);
         for mut item in s.items {
-            item.translate(script_x, sub_shift);
+            item.translate(sub_x, sub_shift);
             out.items.push(item);
         }
     }
@@ -688,6 +706,7 @@ fn layout_frac(ctx: &Ctx, num: &Node, den: &Node) -> MathBox {
         width,
         ascent: num_shift + num_box.ascent,
         descent: den_shift + den_box.descent,
+        italic_correction: 0.0,
         items: Vec::with_capacity(num_box.items.len() + den_box.items.len() + 1),
     };
     for (bx, dy) in [(num_box, -num_shift), (den_box, den_shift)] {
@@ -717,16 +736,19 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
         .map(|(i, _)| i)
         .collect();
 
-    // Pass 1: lay out everything except vertically-stretchy operators, which
-    // must wait until the extent of their siblings is known.
-    enum Slot {
+    // Pass 1: lay out everything except vertically-stretchy (possibly
+    // embellished) operators, which must wait until the extent of their
+    // siblings is known. Spacing and stretchiness come from the embellished
+    // operator's core `<mo>`, so `<msup><mo>)</mo>…</msup>` spaces and
+    // stretches like the fence it wraps.
+    enum Slot<'n> {
         Fixed(MathBox),
-        Stretchy { c: char, symmetric: bool },
+        Stretchy { node: &'n Node, symmetric: bool },
     }
     let mut slots: Vec<(f32, f32, Slot)> = Vec::with_capacity(children.len());
     let (mut max_ascent, mut max_descent) = (0.0_f32, 0.0_f32);
     for (i, child) in children.iter().enumerate() {
-        let slot = if let Node::Operator { text, attrs } = child {
+        let slot = if let Some((text, attrs)) = core_operator(child) {
             let form = attrs.form.unwrap_or_else(|| infer_form(i, &significant));
             let (dict_l, dict_r, flags) = dictionary_entry(text, form);
             let em = ctx.size / 18.0;
@@ -736,23 +758,26 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
             let rspace = attrs
                 .rspace
                 .map_or(f32::from(dict_r) * em, |l| ctx.resolve(l, 0.0).max(0.0));
-            let single = single_char(text);
             let stretchy = attrs.stretchy.unwrap_or(flags & opdict::STRETCHY != 0)
-                && flags & opdict::HORIZONTAL == 0;
-            match single {
-                Some(c) if stretchy && ctx.font.glyph_index(c).is_some() => {
-                    let symmetric =
-                        attrs.symmetric.unwrap_or(flags & opdict::SYMMETRIC != 0);
-                    (lspace, rspace, Slot::Stretchy { c, symmetric })
+                && flags & opdict::HORIZONTAL == 0
+                && single_char(text).and_then(|c| ctx.font.glyph_index(c)).is_some();
+            if stretchy {
+                let symmetric = attrs.symmetric.unwrap_or(flags & opdict::SYMMETRIC != 0);
+                (lspace, rspace, Slot::Stretchy { node: child, symmetric })
+            } else if let Node::Operator { text, attrs } = child {
+                // Direct <mo>: large-operator treatment happens here; for
+                // embellished wrappers layout_operator_base handles it.
+                match single_char(text) {
+                    Some(c)
+                        if ctx.display_style
+                            && attrs.largeop.unwrap_or(flags & opdict::LARGEOP != 0) =>
+                    {
+                        (lspace, rspace, Slot::Fixed(layout_large_operator(ctx, c)))
+                    }
+                    _ => (lspace, rspace, Slot::Fixed(layout_text_run(ctx, text))),
                 }
-                Some(c)
-                    if ctx.display_style
-                        && attrs.largeop.unwrap_or(flags & opdict::LARGEOP != 0) =>
-                {
-                    let b = layout_large_operator(ctx, c);
-                    (lspace, rspace, Slot::Fixed(b))
-                }
-                _ => (lspace, rspace, Slot::Fixed(layout_text_run(ctx, text))),
+            } else {
+                (lspace, rspace, Slot::Fixed(layout_node(ctx, child)))
             }
         } else {
             (0.0, 0.0, Slot::Fixed(layout_node(ctx, child)))
@@ -769,8 +794,8 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
     for (lspace, rspace, slot) in slots {
         let mut b = match slot {
             Slot::Fixed(b) => b,
-            Slot::Stretchy { c, symmetric } => {
-                layout_stretchy_operator(ctx, c, symmetric, max_ascent, max_descent)
+            Slot::Stretchy { node, symmetric } => {
+                layout_embellished_stretchy(ctx, node, symmetric, max_ascent, max_descent)
             }
         };
         for item in &mut b.items {
@@ -780,8 +805,33 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
         out.width += lspace + b.width + rspace;
         out.ascent = out.ascent.max(b.ascent);
         out.descent = out.descent.max(b.descent);
+        out.italic_correction = b.italic_correction;
     }
     out
+}
+
+/// Stretch the core of an embellished operator to the row extent, then
+/// re-wrap it in its script attachments. Under/over embellishments lay out
+/// unstretched (they'd need their own re-wrapping pass).
+fn layout_embellished_stretchy(
+    ctx: &Ctx,
+    node: &Node,
+    symmetric: bool,
+    max_ascent: f32,
+    max_descent: f32,
+) -> MathBox {
+    match node {
+        Node::Operator { text, .. } => match single_char(text) {
+            Some(c) => layout_stretchy_operator(ctx, c, symmetric, max_ascent, max_descent),
+            None => layout_node(ctx, node),
+        },
+        Node::Scripts { base, sub, sup } => {
+            let base_box =
+                layout_embellished_stretchy(ctx, base, symmetric, max_ascent, max_descent);
+            layout_scripts_on(ctx, base_box, sub.as_deref(), sup.as_deref())
+        }
+        _ => layout_node(ctx, node),
+    }
 }
 
 fn single_char(text: &str) -> Option<char> {
@@ -947,6 +997,9 @@ fn layout_large_operator(ctx: &Ctx, c: char) -> MathBox {
     out.width = advance;
     out.ascent = ascent;
     out.descent = height - ascent;
+    if let Stretched::Glyph(g) = stretched {
+        out.italic_correction = ctx.font.italic_correction(g) * ctx.scale;
+    }
     out
 }
 
@@ -1024,6 +1077,7 @@ fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
             size: ctx.size,
         });
         out.width += ctx.font.advance(gid) * ctx.scale;
+        out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
         if let Some(ink) = ctx.font.ink_box(gid) {
             out.ascent = out.ascent.max(ink.y_max as f32 * ctx.scale);
             out.descent = out.descent.max(-(ink.y_min as f32) * ctx.scale);
