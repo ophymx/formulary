@@ -1,0 +1,17 @@
+[package]
+name = "formulary"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Native MathML Core layout: OpenType MATH metrics in, resolution-independent display list out"
+keywords = ["mathml", "math", "layout", "typesetting"]
+categories = ["mathematics", "text-processing"]
+
+[dependencies]
+roxmltree = "0.21"
+ttf-parser = "0.25"
+
+[features]
+default = ["svg"]
+# SVG emission (debugging window and golden-test format). Core stays display-list only.
+svg = []
