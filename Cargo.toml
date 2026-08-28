@@ -10,7 +10,7 @@ readme = "README.md"
 documentation = "https://docs.rs/formulary"
 # The vendored STIX Two Math font stays in the package: it keeps the crate
 # self-testable and feeds the future bundled-font feature.
-exclude = ["HANDOFF.md", "third_party"]
+exclude = ["third_party"]
 
 [dependencies]
 roxmltree = "0.21"
