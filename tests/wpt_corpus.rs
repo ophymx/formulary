@@ -151,11 +151,10 @@ fn check_invariants(markup: &str, font: &MathFont) -> Result<(), String> {
                     return Err(format!("bad glyph item: x={x} y={y} size={size}"));
                 }
             }
-            Item::Rule { x, y, w, h } => {
-                if !(finite(x) && finite(y) && finite(w) && finite(h)) || w < 0.0 || h < 0.0 {
+            Item::Rule { x, y, w, h }
+                if (!(finite(x) && finite(y) && finite(w) && finite(h)) || w < 0.0 || h < 0.0) => {
                     return Err(format!("bad rule item: x={x} y={y} w={w} h={h}"));
                 }
-            }
             _ => {}
         }
     }
