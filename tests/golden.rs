@@ -1,7 +1,8 @@
 //! SVG golden tests plus property-style sanity checks.
 //!
-//! Regenerate goldens with `UPDATE_GOLDEN=1 cargo test`, then eyeball the SVG
-//! (and compare against Firefox rendering the same markup) before committing.
+//! Regenerate goldens with `UPDATE_GOLDEN=1 cargo test` and eyeball the SVG
+//! before committing; `tools/browser-compare.py` renders each golden next to
+//! a browser's rendering of the same markup for drift checks.
 
 use formulary::{layout, parse, LayoutOptions, MathFont};
 
@@ -218,7 +219,8 @@ fn scripts_geometry_sane() {
     assert!(g[1].1 > 0.0, "subscript baseline must sit below the main one");
     assert!(sub.descent > bare.descent);
 
-    // msubsup: sub and sup share their x position and stay apart vertically.
+    // msubsup: sub and sup attach at the same base, offset only by italic
+    // correction, and stay apart vertically.
     let both = layout(
         &parse("<math><msubsup><mi>x</mi><mi>i</mi><mn>2</mn></msubsup></math>").unwrap(),
         &font,

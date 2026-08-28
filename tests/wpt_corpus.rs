@@ -3,8 +3,8 @@
 //! WPT's reftests need a browser; what this harness extracts from them is
 //! their *markup corpus*: every `<math>` fragment in the suite runs through
 //! parse + layout under invariant checks (no panics, finite geometry, linear
-//! size scaling), and unsupported constructs are tallied into a support
-//! matrix printed at the end (run with `--nocapture` to see it).
+//! size scaling), and parse recoveries are tallied by element into a
+//! warning matrix printed at the end (run with `--nocapture` to see it).
 //!
 //! The corpus lives in `third_party/wpt` (gitignored); fetch it with
 //! `tools/fetch-wpt.sh`. When absent, the test passes as a skip so offline

@@ -234,7 +234,9 @@ impl<'a, 'f> Ctx<'a, 'f> {
     }
 
     /// Resolve a MathML length to layout units. Percentages resolve against
-    /// `percent_ref` (the natural dimension for `mpadded`, zero elsewhere).
+    /// `percent_ref` — whatever natural dimension the attribute is defined
+    /// against (an `mpadded` box dimension, the default rule thickness for
+    /// `linethickness`, …); callers with no meaningful reference pass zero.
     fn resolve(&self, len: Length, percent_ref: f32) -> f32 {
         match len {
             Length::Em(v) => v * self.size,
@@ -443,9 +445,10 @@ fn layout_table(ctx: &Ctx, rows: &[Vec<Node>], column_align: &[ColumnAlign]) -> 
 const RADICAL_CHAR: char = '\u{221A}';
 
 /// `<msqrt>`/`<mroot>` per the OpenType MATH radical constants: the radical
-/// glyph is the vertical variant covering the radicand's height plus the
-/// minimum gap and rule; the overbar continues from its top across the
-/// radicand, with RadicalExtraAscender white space above.
+/// glyph is stretched (pre-drawn variant or extender assembly) to cover the
+/// radicand's height plus the minimum gap and rule; the overbar continues
+/// from its top across the radicand, with RadicalExtraAscender white space
+/// above.
 fn layout_radical(ctx: &Ctx, content: MathBox, degree: Option<MathBox>) -> MathBox {
     let c = ctx.font.constants();
     let gap_min = if ctx.display_style {
@@ -699,10 +702,9 @@ fn layout_stack(ctx: &Ctx, num_box: MathBox, den_box: MathBox) -> MathBox {
 }
 
 /// `<msub>`/`<msup>`/`<msubsup>` per the OpenType MATH script constants
-/// (the TeX Appendix G rules 18a–f recast in font terms).
-///
-/// Italic correction of the base is not yet applied to the superscript
-/// offset; that lands together with per-glyph MathGlyphInfo access.
+/// (the TeX Appendix G rules 18a–f recast in font terms). Superscripts
+/// attach at the base's full advance; subscripts tuck left by its italic
+/// correction.
 fn layout_scripts(ctx: &Ctx, base: &Node, sub: Option<&Node>, sup: Option<&Node>) -> MathBox {
     let base_box = layout_operator_base(ctx, base);
     layout_scripts_on(ctx, base_box, sub, sup)
