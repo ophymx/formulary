@@ -1516,6 +1516,28 @@ fn directed_char(ctx: &Ctx, c: char) -> char {
     }
 }
 
+/// A box holding exactly one glyph at its natural size, with the same
+/// metrics a single-character text run would produce.
+fn natural_glyph_box(ctx: &Ctx, glyph: GlyphId) -> MathBox {
+    let mut out = MathBox::empty();
+    out.items.push(Item::Glyph {
+        id: glyph,
+        x: 0.0,
+        y: 0.0,
+        size: ctx.size,
+        color: ctx.color,
+        mirrored: false,
+    });
+    out.width = ctx.font.advance(glyph) * ctx.scale;
+    out.italic_correction = ctx.font.italic_correction(glyph) * ctx.scale;
+    out.lone_glyph = Some(glyph);
+    if let Some(ink) = ctx.font.ink_box(glyph) {
+        out.ascent = f32::from(ink.y_max) * ctx.scale;
+        out.descent = -f32::from(ink.y_min) * ctx.scale;
+    }
+    out
+}
+
 fn single_char(text: &str) -> Option<char> {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
@@ -1672,16 +1694,16 @@ fn layout_stretchy_operator(
 ) -> MathBox {
     // The row pass verified coverage of the unmirrored character; a font
     // that lacks the bidi-mirrored counterpart falls back to the unmirrored
-    // glyph rather than panicking.
-    let directed = directed_char(ctx, c);
+    // glyph rather than panicking. (Neither missing is unreachable given the
+    // row-pass check, but degrade to an empty box rather than trust that at
+    // a distance.)
     let Some(glyph) = ctx
         .font
-        .glyph_index(directed)
+        .glyph_index(directed_char(ctx, c))
         .or_else(|| ctx.font.glyph_index(c))
     else {
-        return layout_text_run(ctx, &c.to_string());
+        return MathBox::empty();
     };
-    let c = directed;
     let axis = ctx.constant(ctx.font.constants().axis_height());
     let (mut target, mut target_ascent) = if symmetric {
         let above = (max_ascent - axis).max(max_descent + axis).max(0.0);
@@ -1707,8 +1729,11 @@ fn layout_stretchy_operator(
         target = clamped;
     }
     if target <= 0.0 {
-        // Nothing to cover (row of only stretchy operators): natural glyph.
-        return layout_text_run(ctx, &c.to_string());
+        // Nothing to cover (row of only stretchy operators): the natural
+        // glyph, emitted from the already-resolved id — re-entering
+        // layout_text_run would apply the bidi mirror a second time and,
+        // mirroring being an involution, undo it.
+        return natural_glyph_box(ctx, ctx.script_glyph(glyph));
     }
     let stretched = ctx.font.stretch_vertical(glyph, target / ctx.scale);
     let mut out = MathBox::empty();

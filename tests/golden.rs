@@ -1600,6 +1600,31 @@ fn rtl_reverses_rows_and_mirrors_fences() {
 }
 
 #[test]
+fn rtl_lone_stretchy_operator_stays_mirrored() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    // symmetric="false" with nothing to cover takes the natural-glyph path,
+    // which must keep the bidi mirror rather than round-tripping back to
+    // the unmirrored form.
+    let gid = |l: &formulary::Layout| match l.items[0] {
+        formulary::Item::Glyph { id, .. } => id,
+        _ => panic!("glyph"),
+    };
+    let rtl_open = layout(
+        &parse(r#"<math dir="rtl"><mo symmetric="false" stretchy="true">(</mo></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let ltr_close = layout(
+        &parse(r#"<math><mo symmetric="false" stretchy="true">)</mo></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(gid(&rtl_open), gid(&ltr_close), "( must render as ) in RTL");
+}
+
+#[test]
 fn rtl_scripts_sit_left_of_base() {
     let data = stix();
     let font = MathFont::new(&data, 0).unwrap();
