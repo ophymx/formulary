@@ -8,6 +8,7 @@ keywords = ["mathml", "math", "layout", "typesetting"]
 categories = ["mathematics", "text-processing"]
 readme = "README.md"
 documentation = "https://docs.rs/formulary"
+repository = "https://github.com/ophymx/formulary"
 # The vendored STIX Two Math font stays in the package: it keeps the crate
 # self-testable and feeds the future bundled-font feature.
 exclude = ["third_party"]
