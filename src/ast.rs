@@ -127,6 +127,11 @@ pub enum Node {
         /// The `accentunder` attribute.
         accent_under: Option<bool>,
     },
+    /// `<mtable>` — rows of `<mtr>` containing `<mtd>` cells. Each cell is
+    /// its children as an implied `mrow`. Rows may be ragged (missing
+    /// trailing cells render empty). Spans and alignment attributes are not
+    /// supported yet.
+    Table { rows: Vec<Vec<Node>> },
     /// `<mpadded>` — overrides the reported box of its content and can shift
     /// the content within it. `None` keeps the natural value.
     Padded {

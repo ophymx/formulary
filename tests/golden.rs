@@ -124,7 +124,7 @@ fn rejects_non_math_root() {
 
 #[test]
 fn unsupported_element_errors() {
-    assert!(parse("<math><mtable><mtr><mtd><mn>1</mn></mtd></mtr></mtable></math>").is_err());
+    assert!(parse("<math><menclose notation=\"box\"><mn>1</mn></menclose></math>").is_err());
 }
 
 #[test]
@@ -799,6 +799,86 @@ fn scripts_use_ssty_alternates() {
         id(&scripted, 1),
         "script prime must swap to its ssty alternate"
     );
+}
+
+#[test]
+fn golden_matrix() {
+    check_golden(
+        "matrix",
+        r#"<math><mo>(</mo><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable><mo>)</mo></math>"#,
+    );
+}
+
+#[test]
+fn mtable_geometry_sane() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    let two_by_two = layout(
+        &parse("<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mn>42</mn></mtd></mtr><mtr><mtd><mn>100</mn></mtd><mtd><mi>d</mi></mtd></mtr></mtable></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    // Two rows stack: the box is taller than a single row and roughly
+    // centered on the math axis (ascent > descent > 0).
+    let single = layout(
+        &parse("<math><mtable><mtr><mtd><mi>a</mi></mtd></mtr></mtable></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(two_by_two.ascent + two_by_two.descent
+        > 1.8 * (single.ascent + single.descent));
+    assert!(two_by_two.descent > 0.0);
+    assert!(two_by_two.ascent > two_by_two.descent, "axis sits above baseline");
+
+    // Cells center within their column: 'a' (narrow, over wide '100') is
+    // indented; the first row's glyph starts right of the second row's.
+    // Glyph order: a, 4, 2 (row 1), 1, 0, 0, d (row 2).
+    let g = glyphs(&two_by_two);
+    assert_eq!(g.len(), 7);
+    let a_x = g[0].0;
+    let hundred_x = g[3].0;
+    assert!(a_x > hundred_x);
+
+    // Rows are baseline-aligned per row, rows stack downward.
+    assert!(g[0].1 < g[3].1);
+
+    // Fences stretch to cover the table.
+    let fenced = layout(
+        &parse("<math><mo>(</mo><mtable><mtr><mtd><mi>a</mi></mtd></mtr><mtr><mtd><mi>b</mi></mtd></mtr></mtable><mo>)</mo></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let paren_small = layout(&parse("<math><mo>(</mo><mi>a</mi><mo>)</mo></math>").unwrap(), &font, &opts);
+    assert!(fenced.ascent + fenced.descent > paren_small.ascent + paren_small.descent);
+
+    // Ragged rows are tolerated.
+    let ragged = layout(
+        &parse("<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd></mtr></mtable></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(glyphs(&ragged).len(), 3);
+
+    // Cells lay out in text style: displaystyle constructs shrink.
+    let in_table = layout(
+        &parse(r#"<math display="block"><mtable><mtr><mtd><mfrac><mn>1</mn><mn>2</mn></mfrac></mtd></mtr></mtable></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let sizes: Vec<f32> = glyphs(&in_table).iter().map(|g| g.2).collect();
+    assert!(sizes.iter().all(|&s| s < 16.0), "table cell fraction is text-style");
+}
+
+#[test]
+fn mtable_rejects_stray_children() {
+    assert!(parse("<math><mtable><mi>x</mi></mtable></math>").is_err());
+    assert!(parse("<math><mtable><mtr><mi>x</mi></mtr></mtable></math>").is_err());
 }
 
 #[test]

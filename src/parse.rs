@@ -169,6 +169,31 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
                 accent_under: bool_attr(node, "accentunder"),
             })
         }
+        "mtable" => {
+            let rows = node
+                .children()
+                .filter(|c| c.is_element())
+                .map(|row| {
+                    if row.tag_name().name() != "mtr" {
+                        return Err(ParseError::Unsupported {
+                            element: row.tag_name().name().to_string(),
+                        });
+                    }
+                    row.children()
+                        .filter(|c| c.is_element())
+                        .map(|cell| {
+                            if cell.tag_name().name() != "mtd" {
+                                return Err(ParseError::Unsupported {
+                                    element: cell.tag_name().name().to_string(),
+                                });
+                            }
+                            Ok(Node::Row(parse_children(cell)?))
+                        })
+                        .collect()
+                })
+                .collect::<Result<Vec<Vec<Node>>, ParseError>>()?;
+            Ok(Node::Table { rows })
+        }
         "msqrt" => Ok(Node::Sqrt(parse_children(node)?)),
         "mspace" => Ok(Node::Space {
             width: length_attr(node, "width"),

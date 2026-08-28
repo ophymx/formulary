@@ -299,6 +299,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
             accent.unwrap_or(false),
             accent_under.unwrap_or(false),
         ),
+        Node::Table { rows } => layout_table(ctx, rows),
         Node::Sqrt(children) => {
             let content = layout_row(&ctx.cramped_child(), children);
             layout_radical(ctx, content, None)
@@ -360,6 +361,69 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
             out
         }
     }
+}
+
+/// `<mtable>`: cells baseline-aligned within each row, columns sized to
+/// their widest cell with cells centered, and the whole table vertically
+/// centered on the math axis. Cells lay out in text style (displaystyle
+/// off), per MathML Core. Spacing uses the classic MathML defaults
+/// (columnspacing 0.8 em, rowspacing 1.0 ex).
+fn layout_table(ctx: &Ctx, rows: &[Vec<Node>]) -> MathBox {
+    let cell_ctx = ctx.styled_child(Some(false), None);
+    let cells: Vec<Vec<MathBox>> = rows
+        .iter()
+        .map(|row| row.iter().map(|c| layout_node(&cell_ctx, c)).collect())
+        .collect();
+
+    let n_cols = cells.iter().map(Vec::len).max().unwrap_or(0);
+    let mut col_widths = vec![0.0_f32; n_cols];
+    for row in &cells {
+        for (j, cell) in row.iter().enumerate() {
+            col_widths[j] = col_widths[j].max(cell.width);
+        }
+    }
+    let row_extents: Vec<(f32, f32)> = cells
+        .iter()
+        .map(|row| {
+            row.iter().fold((0.0_f32, 0.0_f32), |(a, d), c| {
+                (a.max(c.ascent), d.max(c.descent))
+            })
+        })
+        .collect();
+
+    let col_gap = 0.8 * ctx.size;
+    let row_gap = ctx.font.x_height() * ctx.scale;
+    let total_width = col_widths.iter().sum::<f32>()
+        + col_gap * (n_cols.saturating_sub(1)) as f32;
+    let total_height = row_extents.iter().map(|(a, d)| a + d).sum::<f32>()
+        + row_gap * (rows.len().saturating_sub(1)) as f32;
+
+    // Center the table vertically on the math axis; a table shorter than
+    // twice the axis height sits on the baseline instead of dipping below.
+    let axis = ctx.constant(ctx.font.constants().axis_height());
+    let descent = (total_height / 2.0 - axis).max(0.0);
+    let mut out = MathBox {
+        width: total_width,
+        ascent: total_height - descent,
+        descent,
+        ..MathBox::empty()
+    };
+
+    let mut y = -out.ascent;
+    for (row, &(row_ascent, row_descent)) in cells.into_iter().zip(&row_extents) {
+        let baseline = y + row_ascent;
+        let mut x = 0.0;
+        for (j, cell) in row.into_iter().enumerate() {
+            let dx = x + (col_widths[j] - cell.width) / 2.0;
+            for mut item in cell.items {
+                item.translate(dx, baseline);
+                out.items.push(item);
+            }
+            x += col_widths[j] + col_gap;
+        }
+        y = baseline + row_descent + row_gap;
+    }
+    out
 }
 
 const RADICAL_CHAR: char = '\u{221A}';
