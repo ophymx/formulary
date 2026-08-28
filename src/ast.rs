@@ -1,8 +1,8 @@
 //! Typed MathML element tree.
 //!
-//! The parser produces this tree from presentation MathML; layout consumes it.
-//! Only Tier-0 token elements and `mrow` exist so far; further variants are
-//! added as their layout is implemented.
+//! The parser produces this tree from presentation MathML; layout consumes
+//! it. Elements without a variant here (e.g. `menclose`) are handled by the
+//! parser's error recovery rather than the tree.
 
 /// Whether the formula is laid out for its own line or inline with text.
 ///

@@ -74,7 +74,6 @@ impl<'a> MathFont<'a> {
     }
 
     /// The MATH constants table. Present by construction.
-    #[allow(dead_code)] // first consumer is mfrac layout
     pub(crate) fn constants(&self) -> ttf_parser::math::Constants<'a> {
         self.face
             .tables()
