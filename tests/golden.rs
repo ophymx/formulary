@@ -291,7 +291,7 @@ fn radical_geometry_sane() {
         .items
         .iter()
         .filter_map(|i| match *i {
-            formulary::Item::Rule { x, y, w, h } => Some((x, y, w, h)),
+            formulary::Item::Rule { x, y, w, h, .. } => Some((x, y, w, h)),
             _ => None,
         })
         .collect();
@@ -1193,6 +1193,204 @@ fn columnalign_aligns_cells() {
 }
 
 #[test]
+fn golden_styled() {
+    check_golden(
+        "styled",
+        r##"<math><merror><mi>x</mi></merror><mo>+</mo><mfrac mathcolor="blue" mathbackground="#eee"><mn>1</mn><mn>2</mn></mfrac><mo>+</mo><mi mathsize="2em">y</mi></math>"##,
+    );
+}
+
+fn item_color(item: &formulary::Item) -> Option<formulary::Color> {
+    match *item {
+        formulary::Item::Glyph { color, .. } | formulary::Item::Rule { color, .. } => color,
+        formulary::Item::Background { color, .. } => Some(color),
+        _ => None,
+    }
+}
+
+#[test]
+fn mathcolor_inherits_and_paints() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let laid = layout(
+        &parse(r##"<math mathcolor="red"><mfrac><mn>1</mn><mi mathcolor="#00f">x</mi></mfrac></math>"##)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let red = formulary::Color::rgb(255, 0, 0);
+    let blue = formulary::Color::rgb(0, 0, 255);
+    let colors: Vec<_> = laid.items.iter().map(item_color).collect();
+    // numerator glyph and fraction bar inherit red; the mi overrides to blue.
+    assert!(colors.contains(&Some(red)));
+    assert!(colors.contains(&Some(blue)));
+    assert!(!colors.contains(&None));
+
+    // Unstyled markup stays color-free (consumer text color).
+    let plain = layout(
+        &parse("<math><mfrac><mn>1</mn><mi>x</mi></mfrac></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(plain.items.iter().all(|i| item_color(i).is_none()));
+}
+
+#[test]
+fn mathbackground_paints_behind() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let laid = layout(
+        &parse(r#"<math><mi mathbackground="yellow">x</mi><mi>y</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    // Background comes before the glyph it sits behind (painter's order).
+    let bg_index = laid
+        .items
+        .iter()
+        .position(|i| matches!(i, formulary::Item::Background { .. }))
+        .expect("background item");
+    let x_glyph = laid
+        .items
+        .iter()
+        .position(|i| matches!(i, formulary::Item::Glyph { .. }))
+        .unwrap();
+    assert!(bg_index < x_glyph);
+    let formulary::Item::Background { w, h, color, .. } = laid.items[bg_index] else {
+        unreachable!()
+    };
+    assert_eq!(color, formulary::Color::rgb(255, 255, 0));
+    assert!(w > 0.0 && h > 0.0);
+}
+
+#[test]
+fn mathsize_rescales_subtree() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let laid = layout(
+        &parse(r#"<math><mi>x</mi><mi mathsize="2em">x</mi><mi mathsize="150%">x</mi></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&laid);
+    assert_eq!(g[0].2, 16.0);
+    assert!((g[1].2 - 32.0).abs() < 1e-3);
+    assert!((g[2].2 - 24.0).abs() < 1e-3);
+
+    // A whole subtree rescales: scripts inside a mathsize scope shrink
+    // relative to the enlarged size.
+    let scripted = layout(
+        &parse(r#"<math><msup mathsize="2em"><mi>x</mi><mn>2</mn></msup></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let base_scripted = layout(
+        &parse("<math><msup><mi>x</mi><mn>2</mn></msup></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let sg = glyphs(&scripted);
+    let bg = glyphs(&base_scripted);
+    assert!((sg[0].2 - 2.0 * bg[0].2).abs() < 1e-3);
+    assert!((sg[1].2 - 2.0 * bg[1].2).abs() < 1e-3);
+}
+
+#[test]
+fn global_displaystyle_and_scriptlevel() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    // displaystyle directly on mfrac, no mstyle wrapper needed.
+    let on_frac = layout(
+        &parse(r#"<math><mfrac displaystyle="true"><mn>1</mn><mn>2</mn></mfrac></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let via_mstyle = layout(
+        &parse(r#"<math><mstyle displaystyle="true"><mfrac><mn>1</mn><mn>2</mn></mfrac></mstyle></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(on_frac, via_mstyle);
+    // scriptlevel directly on a token.
+    let leveled = layout(
+        &parse(r#"<math><mi scriptlevel="2">x</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(glyphs(&leveled)[0].2 < 16.0 * 0.6);
+}
+
+#[test]
+fn styled_operator_keeps_spacing_and_stretch() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 18.0 }; // 1/18 em == 1 unit
+
+    // A colored '+' still gets its dictionary spacing.
+    let colored = layout(
+        &parse(r#"<math><mi>a</mi><mo mathcolor="red">+</mo><mi>b</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let plain = layout(
+        &parse("<math><mi>a</mi><mo>+</mo><mi>b</mi></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((colored.width - plain.width).abs() < 1e-3);
+
+    // A colored fence still stretches, and the stretched glyph is colored.
+    let fenced = layout(
+        &parse(r#"<math><mo mathcolor="red">(</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>)</mo></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let plain_fenced = layout(
+        &parse("<math><mo>(</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>)</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(fenced.ascent, plain_fenced.ascent);
+    assert_eq!(
+        item_color(&fenced.items[0]),
+        Some(formulary::Color::rgb(255, 0, 0))
+    );
+}
+
+#[test]
+fn merror_gets_ua_styling() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let laid = layout(
+        &parse("<math><merror><mi>x</mi></merror></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let backgrounds = laid
+        .items
+        .iter()
+        .filter(|i| matches!(i, formulary::Item::Background { .. }))
+        .count();
+    let red_rules = laid
+        .items
+        .iter()
+        .filter(|i| {
+            matches!(i, formulary::Item::Rule { color: Some(c), .. } if *c == formulary::Color::rgb(255, 0, 0))
+        })
+        .count();
+    assert_eq!(backgrounds, 1, "light-yellow fill behind the contents");
+    assert_eq!(red_rules, 4, "red border edges");
+}
+
+#[test]
 fn underover_wrong_arity_warns() {
     assert!(!parse("<math><mover><mi>x</mi></mover></math>").unwrap().warnings.is_empty());
     assert!(!parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>")
@@ -1222,7 +1420,7 @@ fn mfrac_geometry_sane() {
         .items
         .iter()
         .filter_map(|i| match *i {
-            formulary::Item::Rule { x, y, w, h } => Some((x, y, w, h)),
+            formulary::Item::Rule { x, y, w, h, .. } => Some((x, y, w, h)),
             _ => None,
         })
         .collect();

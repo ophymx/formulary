@@ -6,7 +6,8 @@
 //! non-`<math>` root are hard errors.
 
 use crate::ast::{
-    ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs, ScriptLevel, Warning,
+    Color, ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs, ScriptLevel,
+    StyleOverrides, Warning,
 };
 use crate::mathvariant::{apply_variant, to_math_italic, MathVariant};
 
@@ -53,7 +54,14 @@ pub fn parse(source: &str) -> Result<MathRoot, ParseError> {
         _ => DisplayMode::Inline,
     };
     let mut warnings = Vec::new();
-    let children = parse_children(root, &mut warnings);
+    let mut children = parse_children(root, &mut warnings);
+    // Style attributes on <math> itself scope over all its children.
+    // displaystyle is handled via MathRoot, not the wrapper.
+    let mut styles = style_overrides(root);
+    styles.display_style = None;
+    if !styles.is_empty() {
+        children = vec![Node::Styled { styles, children }];
+    }
     Ok(MathRoot {
         display,
         displaystyle: bool_attr(root, "displaystyle"),
@@ -85,7 +93,34 @@ fn invalid(
     Node::Row(parse_children(node, warnings))
 }
 
+/// Parse one element, wrapping it in a style scope if it carries any of the
+/// global style attributes.
 fn parse_node(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
+    let parsed = parse_element(node, warnings);
+    let styles = style_overrides(node);
+    if styles.is_empty() {
+        parsed
+    } else {
+        Node::Styled {
+            styles,
+            children: vec![parsed],
+        }
+    }
+}
+
+/// The global style attributes present on an element.
+fn style_overrides(node: roxmltree::Node) -> StyleOverrides {
+    StyleOverrides {
+        display_style: bool_attr(node, "displaystyle"),
+        script_level: node.attribute("scriptlevel").and_then(parse_script_level),
+        math_size: length_attr(node, "mathsize"),
+        color: color_attr(node, "mathcolor"),
+        background: color_attr(node, "mathbackground"),
+        border: None,
+    }
+}
+
+fn parse_element(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
     let name = node.tag_name().name();
     match name {
         "mi" => {
@@ -113,9 +148,16 @@ fn parse_node(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
             Some(first) => parse_node(first, warnings),
             None => Node::Row(Vec::new()),
         },
-        // `<merror>` renders its contents; error styling (red, border) is a
-        // consumer concern until the display list carries paint info.
-        "merror" => Node::Row(parse_children(node, warnings)),
+        // `<merror>` renders its contents with the Core user-agent styling:
+        // a red border over a light-yellow background.
+        "merror" => Node::Styled {
+            styles: StyleOverrides {
+                background: Some(Color::rgb(0xFF, 0xFF, 0xE0)),
+                border: Some(Color::rgb(0xFF, 0, 0)),
+                ..StyleOverrides::default()
+            },
+            children: parse_children(node, warnings),
+        },
         // Deprecated `<mfenced>` desugars to its equivalent mrow: open fence,
         // children joined by separators (last one repeating), close fence.
         "mfenced" => {
@@ -280,15 +322,9 @@ fn parse_node(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
             height: length_attr(node, "height"),
             depth: length_attr(node, "depth"),
         },
-        "mstyle" => Node::Styled {
-            display_style: match node.attribute("displaystyle") {
-                Some("true") => Some(true),
-                Some("false") => Some(false),
-                _ => None,
-            },
-            script_level: node.attribute("scriptlevel").and_then(parse_script_level),
-            children: parse_children(node, warnings),
-        },
+        // <mstyle> is a plain group; its style attributes are picked up by
+        // the universal wrapper in parse_node like on any other element.
+        "mstyle" => Node::Row(parse_children(node, warnings)),
         "mphantom" => Node::Phantom(parse_children(node, warnings)),
         "mpadded" => Node::Padded {
             width: length_attr(node, "width"),
@@ -427,6 +463,75 @@ fn styled_text(node: roxmltree::Node) -> String {
         Some(v) => apply(&text, v),
         None => text,
     }
+}
+
+fn color_attr(node: roxmltree::Node, name: &str) -> Option<Color> {
+    node.attribute(name).and_then(parse_color)
+}
+
+/// CSS color subset: #rgb/#rgba/#rrggbb/#rrggbbaa hex forms and common named
+/// colors. Invalid values behave like an absent attribute.
+fn parse_color(s: &str) -> Option<Color> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        let d = |i: usize| hex.as_bytes().get(i).and_then(|b| (*b as char).to_digit(16));
+        return match hex.len() {
+            3 | 4 => {
+                let mut c = [0u8; 4];
+                for (i, v) in c.iter_mut().enumerate().take(hex.len()) {
+                    *v = (d(i)? * 17) as u8;
+                }
+                if hex.len() == 3 {
+                    c[3] = 255;
+                }
+                Some(Color { r: c[0], g: c[1], b: c[2], a: c[3] })
+            }
+            6 | 8 => {
+                let mut c = [0u8; 4];
+                for (i, v) in c.iter_mut().enumerate().take(hex.len() / 2) {
+                    *v = (d(2 * i)? * 16 + d(2 * i + 1)?) as u8;
+                }
+                if hex.len() == 6 {
+                    c[3] = 255;
+                }
+                Some(Color { r: c[0], g: c[1], b: c[2], a: c[3] })
+            }
+            _ => None,
+        };
+    }
+    let named = match s.to_ascii_lowercase().as_str() {
+        "black" => (0x00, 0x00, 0x00),
+        "silver" => (0xC0, 0xC0, 0xC0),
+        "gray" | "grey" => (0x80, 0x80, 0x80),
+        "white" => (0xFF, 0xFF, 0xFF),
+        "maroon" => (0x80, 0x00, 0x00),
+        "red" => (0xFF, 0x00, 0x00),
+        "purple" => (0x80, 0x00, 0x80),
+        "fuchsia" | "magenta" => (0xFF, 0x00, 0xFF),
+        "green" => (0x00, 0x80, 0x00),
+        "lime" => (0x00, 0xFF, 0x00),
+        "olive" => (0x80, 0x80, 0x00),
+        "yellow" => (0xFF, 0xFF, 0x00),
+        "navy" => (0x00, 0x00, 0x80),
+        "blue" => (0x00, 0x00, 0xFF),
+        "teal" => (0x00, 0x80, 0x80),
+        "aqua" | "cyan" => (0x00, 0xFF, 0xFF),
+        "orange" => (0xFF, 0xA5, 0x00),
+        "brown" => (0xA5, 0x2A, 0x2A),
+        "pink" => (0xFF, 0xC0, 0xCB),
+        "gold" => (0xFF, 0xD7, 0x00),
+        "violet" => (0xEE, 0x82, 0xEE),
+        "indigo" => (0x4B, 0x00, 0x82),
+        "lightyellow" => (0xFF, 0xFF, 0xE0),
+        "lightgray" | "lightgrey" => (0xD3, 0xD3, 0xD3),
+        "darkgray" | "darkgrey" => (0xA9, 0xA9, 0xA9),
+        "darkred" => (0x8B, 0x00, 0x00),
+        "darkgreen" => (0x00, 0x64, 0x00),
+        "darkblue" => (0x00, 0x00, 0x8B),
+        "transparent" => return Some(Color { r: 0, g: 0, b: 0, a: 0 }),
+        _ => return None,
+    };
+    Some(Color::rgb(named.0, named.1, named.2))
 }
 
 fn bool_attr(node: roxmltree::Node, name: &str) -> Option<bool> {

@@ -56,7 +56,11 @@ operator dictionary spacing and forms, vertically and horizontally stretchy
 operators via glyph variants *and* assembly with `minsize`/`maxsize`
 clamping, large operators in display style, italic correction, `ssty`
 script alternates, display/inline modes (`display` and `displaystyle`) with
-full script-level and cramped-style propagation.
+full script-level and cramped-style propagation; the global style
+attributes (`displaystyle`, `scriptlevel`, `mathsize`, `mathcolor`,
+`mathbackground`) on any element, with colors carried on display-list items
+(`None` = the consumer's text color) and `merror` drawing its red-border /
+light-yellow user-agent styling.
 
 Not (yet) supported: `menclose` (not in MathML Core), `mtable` spans, RTL
 math, content MathML, HTML inside token elements, linebreaking.

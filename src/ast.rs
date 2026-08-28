@@ -32,6 +32,45 @@ pub enum Length {
     Percent(f32),
 }
 
+/// An sRGB color with alpha, as parsed from `mathcolor`/`mathbackground`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Color {
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Color { r, g, b, a: 255 }
+    }
+}
+
+/// Style attributes valid on every MathML element, captured by a
+/// [`Node::Styled`] wrapper around the element they appeared on.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StyleOverrides {
+    pub display_style: Option<bool>,
+    pub script_level: Option<ScriptLevel>,
+    /// `mathsize`: new font size for the subtree (em/% relative to the
+    /// inherited size).
+    pub math_size: Option<Length>,
+    /// `mathcolor`: ink color for the subtree.
+    pub color: Option<Color>,
+    /// `mathbackground`: painted behind the subtree's box.
+    pub background: Option<Color>,
+    /// Not a MathML attribute: a 1px border in this color around the box,
+    /// used for `merror`'s user-agent styling.
+    pub border: Option<Color>,
+}
+
+impl StyleOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == StyleOverrides::default()
+    }
+}
+
 /// Horizontal alignment of cells within a table column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColumnAlign {
@@ -155,11 +194,11 @@ pub enum Node {
         height: Option<Length>,
         depth: Option<Length>,
     },
-    /// `<mstyle>` — style container. Only `displaystyle` and `scriptlevel`
-    /// affect layout in MathML Core.
+    /// A style scope: `<mstyle>`, or any element carrying global style
+    /// attributes (`displaystyle`, `scriptlevel`, `mathsize`, `mathcolor`,
+    /// `mathbackground`), which parse into this wrapper around the element.
     Styled {
-        display_style: Option<bool>,
-        script_level: Option<ScriptLevel>,
+        styles: StyleOverrides,
         children: Vec<Node>,
     },
     /// `<mphantom>` — occupies its children's space, draws nothing.

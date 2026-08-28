@@ -31,7 +31,7 @@ mod parse;
 #[cfg(feature = "svg")]
 pub mod svg;
 
-pub use ast::{DisplayMode, MathRoot, Warning};
+pub use ast::{Color, DisplayMode, MathRoot, Warning};
 pub use font::{FontError, GlyphId, MathFont};
 pub use layout::{layout, Item, Layout, LayoutOptions};
 pub use parse::{parse, ParseError};

@@ -11,7 +11,9 @@
 //! Layout is cheap and resolution-independent: re-run it when the target font
 //! size changes rather than scaling a previous result.
 
-use crate::ast::{ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, ScriptLevel};
+use crate::ast::{
+    Color, ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, ScriptLevel, StyleOverrides,
+};
 use crate::font::{GlyphId, MathFont, Stretched};
 use crate::opdict;
 
@@ -41,26 +43,64 @@ pub struct Layout {
 pub enum Item {
     /// A glyph from the math font, positioned at its baseline origin `(x, y)`,
     /// to be rasterized at font size `size` (same unit as everything else;
-    /// differs from the top-level font size inside scripts).
+    /// differs from the top-level font size inside scripts). `color: None`
+    /// means the consumer's text color, so unstyled math matches the
+    /// surrounding text.
     Glyph {
         id: GlyphId,
         x: f32,
         y: f32,
         size: f32,
+        color: Option<Color>,
     },
-    /// A filled rectangle (fraction bars, radical rules). `(x, y)` is the top-left
-    /// corner; `h` extends downward.
-    Rule { x: f32, y: f32, w: f32, h: f32 },
+    /// A filled rectangle (fraction bars, radical rules, merror borders).
+    /// `(x, y)` is the top-left corner; `h` extends downward. `color: None`
+    /// means the consumer's text color.
+    Rule {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: Option<Color>,
+    },
+    /// A `mathbackground` fill behind part of the formula. Emitted before
+    /// the items it sits behind, so drawing in list order is correct.
+    Background {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: Color,
+    },
 }
 
 impl Item {
     fn translate(&mut self, dx: f32, dy: f32) {
         match self {
-            Item::Glyph { x, y, .. } | Item::Rule { x, y, .. } => {
+            Item::Glyph { x, y, .. }
+            | Item::Rule { x, y, .. }
+            | Item::Background { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
         }
+    }
+}
+
+/// Size multiplier for a script level, from the font's scale-down percents.
+fn script_factor(font: &MathFont, script_level: u8) -> f32 {
+    let percent = |v: i16, fallback: f32| {
+        if v > 0 {
+            v as f32 / 100.0
+        } else {
+            fallback
+        }
+    };
+    let consts = font.constants();
+    match script_level {
+        0 => 1.0,
+        1 => percent(consts.script_percent_scale_down(), 0.71),
+        _ => percent(consts.script_script_percent_scale_down(), 0.5041),
     }
 }
 
@@ -98,6 +138,8 @@ struct Ctx<'a, 'f> {
     /// Cramped styles (under bars, in subscripts/denominators) raise
     /// superscripts less.
     cramped: bool,
+    /// Inherited `mathcolor`; `None` is the consumer's text color.
+    color: Option<Color>,
     /// Font size at the current script level, stamped on emitted glyphs.
     size: f32,
     /// Font design units → output units at the current script level.
@@ -106,7 +148,7 @@ struct Ctx<'a, 'f> {
 
 impl<'a, 'f> Ctx<'a, 'f> {
     fn new(font: &'a MathFont<'f>, base_size: f32, display_style: bool) -> Self {
-        Self::derive(font, base_size, 0, display_style, false)
+        Self::derive(font, base_size, 0, display_style, false, None)
     }
 
     fn derive(
@@ -115,27 +157,16 @@ impl<'a, 'f> Ctx<'a, 'f> {
         script_level: u8,
         display_style: bool,
         cramped: bool,
+        color: Option<Color>,
     ) -> Self {
-        let percent = |v: i16, fallback: f32| {
-            if v > 0 {
-                v as f32 / 100.0
-            } else {
-                fallback
-            }
-        };
-        let consts = font.constants();
-        let factor = match script_level {
-            0 => 1.0,
-            1 => percent(consts.script_percent_scale_down(), 0.71),
-            _ => percent(consts.script_script_percent_scale_down(), 0.5041),
-        };
-        let size = base_size * factor;
+        let size = base_size * script_factor(font, script_level);
         Ctx {
             font,
             base_size,
             script_level,
             display_style,
             cramped,
+            color,
             size,
             scale: size / font.units_per_em(),
         }
@@ -149,7 +180,14 @@ impl<'a, 'f> Ctx<'a, 'f> {
         } else {
             self.script_level.saturating_add(1)
         };
-        Ctx::derive(self.font, self.base_size, level, false, self.cramped || cramped)
+        Ctx::derive(
+            self.font,
+            self.base_size,
+            level,
+            false,
+            self.cramped || cramped,
+            self.color,
+        )
     }
 
     /// Child context under a radical: same size and style, but cramped.
@@ -160,6 +198,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             self.script_level,
             self.display_style,
             true,
+            self.color,
         )
     }
 
@@ -172,6 +211,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             self.script_level.saturating_add(2),
             false,
             self.cramped,
+            self.color,
         )
     }
 
@@ -184,6 +224,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             self.script_level,
             false,
             self.cramped || cramped,
+            self.color,
         )
     }
 
@@ -196,24 +237,36 @@ impl<'a, 'f> Ctx<'a, 'f> {
             self.script_level.saturating_add(1),
             false,
             self.cramped || cramped,
+            self.color,
         )
     }
 
-    /// Child context for `<mstyle>` overrides.
-    fn styled_child(&self, display: Option<bool>, level: Option<ScriptLevel>) -> Self {
-        let script_level = match level {
+    /// Child context under a style scope (`mstyle` or any element's global
+    /// style attributes).
+    fn styled_child(&self, styles: &StyleOverrides) -> Self {
+        let script_level = match styles.script_level {
             None => self.script_level,
             Some(ScriptLevel::Set(n)) => n,
             Some(ScriptLevel::Add(d)) => {
                 (i16::from(self.script_level) + i16::from(d)).clamp(0, 255) as u8
             }
         };
+        // mathsize sets the size at this node; scripts below still scale
+        // relative to it, so back out the script factor from the base size.
+        let base_size = match styles.math_size {
+            Some(len) => {
+                let target = self.resolve(len, self.size).max(0.0);
+                target / script_factor(self.font, script_level)
+            }
+            None => self.base_size,
+        };
         Ctx::derive(
             self.font,
-            self.base_size,
+            base_size,
             script_level,
-            display.unwrap_or(self.display_style),
+            styles.display_style.unwrap_or(self.display_style),
             self.cramped,
+            styles.color.or(self.color),
         )
     }
 
@@ -276,6 +329,10 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
         // form-dependent spacing; the surrounding row handles spacing.
         Node::Operator { text, .. } => layout_text_run(ctx, text),
         Node::Number(text) | Node::Text(text) => layout_text_run(ctx, text),
+        // A single-child mrow is transparent: its child's operator spacing
+        // and embellishments belong to the enclosing row, so no inner row is
+        // formed (which would apply operator spacing a second time).
+        Node::Row(children) if children.len() == 1 => layout_node(ctx, &children[0]),
         Node::Row(children) => layout_row(ctx, children),
         Node::Frac {
             num,
@@ -321,11 +378,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
             italic_correction: 0.0,
             items: Vec::new(),
         },
-        Node::Styled {
-            display_style,
-            script_level,
-            children,
-        } => layout_row(&ctx.styled_child(*display_style, *script_level), children),
+        Node::Styled { styles, children } => layout_styled(ctx, styles, children),
         Node::Phantom(children) => {
             let mut b = layout_row(ctx, children);
             b.items.clear();
@@ -364,6 +417,47 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
     }
 }
 
+/// A style scope: lay the children out under the overridden context, then
+/// paint `mathbackground` behind them and the merror border around them.
+fn layout_styled(ctx: &Ctx, styles: &StyleOverrides, children: &[Node]) -> MathBox {
+    let inner = ctx.styled_child(styles);
+    // Style wrappers around a single element are transparent like
+    // single-child mrows: the enclosing row owns the child's operator
+    // spacing.
+    let b = match children {
+        [only] => layout_node(&inner, only),
+        _ => layout_row(&inner, children),
+    };
+    decorate(styles, b)
+}
+
+/// Prepend the background fill and append the border rules for a style
+/// scope's box.
+fn decorate(styles: &StyleOverrides, mut b: MathBox) -> MathBox {
+    if styles.background.is_none() && styles.border.is_none() {
+        return b;
+    }
+    let (x, y, w, h) = (0.0, -b.ascent, b.width, b.ascent + b.descent);
+    if let Some(color) = styles.background {
+        b.items.insert(0, Item::Background { x, y, w, h, color });
+    }
+    if let Some(color) = styles.border {
+        let t = 1.0; // 1px, per the merror user-agent styling
+        let edge = |x, y, w, h| Item::Rule {
+            x,
+            y,
+            w,
+            h,
+            color: Some(color),
+        };
+        b.items.push(edge(x, y, w, t));
+        b.items.push(edge(x, y + h - t, w, t));
+        b.items.push(edge(x, y, t, h));
+        b.items.push(edge(x + w - t, y, t, h));
+    }
+    b
+}
+
 /// `<mtable>`: cells baseline-aligned within each row, columns sized to
 /// their widest cell, and the whole table vertically centered on the math
 /// axis. Cells lay out in text style (displaystyle off), per MathML Core,
@@ -371,7 +465,10 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
 /// `columnalign` sets per-column alignment (default center; last entry
 /// repeats).
 fn layout_table(ctx: &Ctx, rows: &[Vec<Node>], column_align: &[ColumnAlign]) -> MathBox {
-    let cell_ctx = ctx.styled_child(Some(false), None);
+    let cell_ctx = ctx.styled_child(&StyleOverrides {
+        display_style: Some(false),
+        ..StyleOverrides::default()
+    });
     let cells: Vec<Vec<MathBox>> = rows
         .iter()
         .map(|row| row.iter().map(|c| layout_node(&cell_ctx, c)).collect())
@@ -505,6 +602,7 @@ fn layout_radical(ctx: &Ctx, content: MathBox, degree: Option<MathBox>) -> MathB
         y: bar_top,
         w: content.width,
         h: thickness,
+        color: ctx.color,
     });
     for mut item in content.items {
         item.translate(x, 0.0);
@@ -976,6 +1074,7 @@ fn layout_frac(
         y: -(axis + thickness / 2.0),
         w: width,
         h: thickness,
+        color: ctx.color,
     });
     out
 }
@@ -1066,8 +1165,9 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
 }
 
 /// Stretch the core of an embellished operator to the row extent, then
-/// re-wrap it in its script attachments. Under/over embellishments lay out
-/// unstretched (they'd need their own re-wrapping pass).
+/// re-wrap it in its script attachments and style scopes. Under/over
+/// embellishments lay out unstretched (they'd need their own re-wrapping
+/// pass).
 fn layout_embellished_stretchy(
     ctx: &Ctx,
     node: &Node,
@@ -1075,6 +1175,16 @@ fn layout_embellished_stretchy(
     max_ascent: f32,
     max_descent: f32,
 ) -> MathBox {
+    match node {
+        Node::Styled { styles, children } if children.len() == 1 => {
+            let inner = ctx.styled_child(styles);
+            return decorate(
+                styles,
+                layout_embellished_stretchy(&inner, &children[0], symmetric, max_ascent, max_descent),
+            );
+        }
+        _ => {}
+    }
     match node {
         Node::Operator { text, .. } => match single_char(text) {
             Some(c) => {
@@ -1123,6 +1233,7 @@ fn emit_stretched(ctx: &Ctx, stretched: &Stretched, x: f32, top: f32, items: &mu
                 x,
                 y: top + f32::from(ink.y_max) * ctx.scale,
                 size: ctx.size,
+                color: ctx.color,
             });
             (
                 f32::from(ink.y_max - ink.y_min) * ctx.scale,
@@ -1142,6 +1253,7 @@ fn emit_stretched(ctx: &Ctx, stretched: &Stretched, x: f32, top: f32, items: &mu
                     x,
                     y: bottom - offset * ctx.scale + f32::from(ink.y_min) * ctx.scale,
                     size: ctx.size,
+                    color: ctx.color,
                 });
             }
             (height, advance)
@@ -1160,6 +1272,7 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
                 x: 0.0,
                 y: 0.0,
                 size: ctx.size,
+                color: ctx.color,
             });
             out.width = ctx.font.advance(*g) * ctx.scale;
             if let Some(ink) = ctx.font.ink_box(*g) {
@@ -1175,6 +1288,7 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
                     x: offset * ctx.scale,
                     y: 0.0,
                     size: ctx.size,
+                    color: ctx.color,
                 });
                 if let Some(ink) = ctx.font.ink_box(g) {
                     out.ascent = out.ascent.max(f32::from(ink.y_max) * ctx.scale);
@@ -1187,30 +1301,40 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
 }
 
 /// The core `<mo>` of an embellished operator: the node itself, or the base
-/// of scripts/under-over wrappers (MathML Core's embellished-operator
-/// definition, without the space-like-row cases).
+/// of scripts/under-over wrappers, or a style scope / one-element row around
+/// an embellished operator (MathML Core's embellished-operator definition,
+/// minus the space-like-sibling row case).
 fn core_operator(node: &Node) -> Option<(&str, &crate::ast::OperatorAttrs)> {
     match node {
         Node::Operator { text, attrs } => Some((text, attrs)),
         Node::Scripts { base, .. } | Node::UnderOver { base, .. } => core_operator(base),
+        Node::Styled { children, .. } | Node::Row(children) if children.len() == 1 => {
+            core_operator(&children[0])
+        }
         _ => None,
     }
 }
 
 /// Lay out a node that may be a lone large operator: in display style the
 /// base of scripts/limits picks its DisplayOperatorMinHeight variant.
+/// Style scopes around the operator are looked through and re-applied.
 fn layout_operator_base(ctx: &Ctx, node: &Node) -> MathBox {
-    if let Node::Operator { text, attrs } = node {
-        if ctx.display_style {
+    match node {
+        Node::Operator { text, attrs } if ctx.display_style => {
             if let Some(c) = single_char(text) {
                 let flags = dictionary_entry(text, Form::Infix).2;
                 if attrs.largeop.unwrap_or(flags & opdict::LARGEOP != 0) {
                     return layout_large_operator(ctx, c);
                 }
             }
+            layout_node(ctx, node)
         }
+        Node::Styled { styles, children } if children.len() == 1 => {
+            let inner = ctx.styled_child(styles);
+            decorate(styles, layout_operator_base(&inner, &children[0]))
+        }
+        _ => layout_node(ctx, node),
     }
-    layout_node(ctx, node)
 }
 
 /// A vertically-stretchy operator covering the row's extent: symmetric ones
@@ -1369,6 +1493,7 @@ fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
             x: out.width,
             y: 0.0,
             size: ctx.size,
+            color: ctx.color,
         });
         out.width += ctx.font.advance(gid) * ctx.scale;
         out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
@@ -1424,6 +1549,7 @@ fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
             x,
             y,
             size: ctx.size,
+            color: ctx.color,
         });
         out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
         if let Some(ink) = ctx.font.ink_box(gid) {

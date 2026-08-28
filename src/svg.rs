@@ -5,6 +5,7 @@
 
 use core::fmt::Write as _;
 
+use crate::ast::Color;
 use crate::font::MathFont;
 use crate::layout::{Item, Layout};
 
@@ -34,7 +35,13 @@ pub fn to_svg(layout: &Layout, font: &MathFont) -> String {
     );
     for item in &layout.items {
         match *item {
-            Item::Glyph { id, x, y, size } => {
+            Item::Glyph {
+                id,
+                x,
+                y,
+                size,
+                color,
+            } => {
                 let mut builder = PathBuilder::default();
                 if font.face().outline_glyph(id, &mut builder).is_none() {
                     continue; // blank glyph (e.g. space)
@@ -43,27 +50,56 @@ pub fn to_svg(layout: &Layout, font: &MathFont) -> String {
                 let s = size / font.units_per_em();
                 let _ = writeln!(
                     svg,
-                    r#"<path transform="translate({} {}) scale({s} -{s})" d="{d}"/>"#,
+                    r#"<path transform="translate({} {}) scale({s} -{s})"{f} d="{d}"/>"#,
                     fmt(x),
                     fmt(y),
                     s = fmt(s),
+                    f = fill(color),
                     d = builder.d,
                 );
             }
-            Item::Rule { x, y, w, h } => {
+            Item::Rule { x, y, w, h, color } => {
                 let _ = writeln!(
                     svg,
-                    r#"<rect x="{}" y="{}" width="{}" height="{}"/>"#,
+                    r#"<rect x="{}" y="{}" width="{}" height="{}"{}/>"#,
                     fmt(x),
                     fmt(y),
                     fmt(w),
-                    fmt(h)
+                    fmt(h),
+                    fill(color)
+                );
+            }
+            Item::Background { x, y, w, h, color } => {
+                let _ = writeln!(
+                    svg,
+                    r#"<rect x="{}" y="{}" width="{}" height="{}"{}/>"#,
+                    fmt(x),
+                    fmt(y),
+                    fmt(w),
+                    fmt(h),
+                    fill(Some(color))
                 );
             }
         }
     }
     svg.push_str("</g>\n</svg>\n");
     svg
+}
+
+/// A `fill` attribute for a colored item; empty for the inherited default,
+/// so colorless output is unchanged.
+fn fill(color: Option<Color>) -> String {
+    match color {
+        None => String::new(),
+        Some(c) if c.a == 255 => format!(r##" fill="#{:02x}{:02x}{:02x}""##, c.r, c.g, c.b),
+        Some(c) => format!(
+            r##" fill="#{:02x}{:02x}{:02x}" fill-opacity="{}""##,
+            c.r,
+            c.g,
+            c.b,
+            fmt(f32::from(c.a) / 255.0)
+        ),
+    }
 }
 
 /// Compact, stable float formatting for diffable goldens: three decimal
