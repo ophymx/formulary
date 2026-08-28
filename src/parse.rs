@@ -106,6 +106,38 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
         // `<merror>` renders its contents; error styling (red, border) is a
         // consumer concern until the display list carries paint info.
         "merror" => Ok(Node::Row(parse_children(node)?)),
+        // Deprecated `<mfenced>` desugars to its equivalent mrow: open fence,
+        // children joined by separators (last one repeating), close fence.
+        "mfenced" => {
+            let mo = |text: &str| Node::Operator {
+                text: text.to_string(),
+                attrs: OperatorAttrs::default(),
+            };
+            let open = node.attribute("open").unwrap_or("(").trim();
+            let close = node.attribute("close").unwrap_or(")").trim();
+            let separators: Vec<char> = node
+                .attribute("separators")
+                .unwrap_or(",")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let mut row = Vec::new();
+            if !open.is_empty() {
+                row.push(mo(open));
+            }
+            for (i, child) in parse_children(node)?.into_iter().enumerate() {
+                if i > 0 {
+                    if let Some(sep) = separators.get(i - 1).or(separators.last()) {
+                        row.push(mo(&sep.to_string()));
+                    }
+                }
+                row.push(child);
+            }
+            if !close.is_empty() {
+                row.push(mo(close));
+            }
+            Ok(Node::Row(row))
+        }
         "mo" => Ok(Node::Operator {
             text: text_content(node),
             attrs: OperatorAttrs {

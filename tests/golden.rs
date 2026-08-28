@@ -950,6 +950,39 @@ fn multiscripts_geometry_sane() {
 }
 
 #[test]
+fn mfenced_desugars_to_fenced_row() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let fenced = layout(
+        &parse("<math><mfenced><mi>a</mi><mi>b</mi></mfenced></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let explicit = layout(
+        &parse("<math><mrow><mo>(</mo><mi>a</mi><mo>,</mo><mi>b</mi><mo>)</mo></mrow></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(fenced, explicit);
+
+    // Custom fences and empty separators.
+    let bracketed = layout(
+        &parse(r#"<math><mfenced open="[" close="]" separators=""><mi>a</mi><mi>b</mi></mfenced></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let explicit2 = layout(
+        &parse("<math><mrow><mo>[</mo><mi>a</mi><mi>b</mi><mo>]</mo></mrow></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(bracketed, explicit2);
+}
+
+#[test]
 fn underover_wrong_arity_errors() {
     assert!(parse("<math><mover><mi>x</mi></mover></math>").is_err());
     assert!(parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>").is_err());

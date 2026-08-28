@@ -6,6 +6,11 @@ license = "MIT OR Apache-2.0"
 description = "Native MathML Core layout: OpenType MATH metrics in, resolution-independent display list out"
 keywords = ["mathml", "math", "layout", "typesetting"]
 categories = ["mathematics", "text-processing"]
+readme = "README.md"
+documentation = "https://docs.rs/formulary"
+# The vendored STIX Two Math font stays in the package: it keeps the crate
+# self-testable and feeds the future bundled-font feature.
+exclude = ["HANDOFF.md", "third_party"]
 
 [dependencies]
 roxmltree = "0.21"
