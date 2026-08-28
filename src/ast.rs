@@ -98,6 +98,14 @@ pub enum Node {
         sub: Option<Box<Node>>,
         sup: Option<Box<Node>>,
     },
+    /// `<mmultiscripts>` — a base with any number of (sub, sup) script pairs
+    /// after it and, following `<mprescripts/>`, before it. `None` slots come
+    /// from `<none/>` placeholders.
+    MultiScripts {
+        base: Box<Node>,
+        post: Vec<(Option<Node>, Option<Node>)>,
+        pre: Vec<(Option<Node>, Option<Node>)>,
+    },
     /// `<msqrt>` — children form an implied `mrow` under the radical.
     Sqrt(Vec<Node>),
     /// `<mroot>` — radicand plus explicit degree. Exactly two children.

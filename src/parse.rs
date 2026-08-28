@@ -18,6 +18,12 @@ pub enum ParseError {
         expected: usize,
         found: usize,
     },
+    /// An element's children don't form the structure the spec requires
+    /// (e.g. `<mmultiscripts>` with an odd number of script elements).
+    InvalidStructure {
+        element: &'static str,
+        reason: &'static str,
+    },
 }
 
 impl core::fmt::Display for ParseError {
@@ -36,6 +42,9 @@ impl core::fmt::Display for ParseError {
                 found,
             } => {
                 write!(f, "<{element}> requires {expected} children, found {found}")
+            }
+            ParseError::InvalidStructure { element, reason } => {
+                write!(f, "<{element}>: {reason}")
             }
         }
     }
@@ -185,6 +194,59 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
                 over,
                 accent: bool_attr(node, "accent"),
                 accent_under: bool_attr(node, "accentunder"),
+            })
+        }
+        "mmultiscripts" => {
+            let mut elements = node.children().filter(|c| c.is_element());
+            let base = match elements.next() {
+                Some(b) if !matches!(b.tag_name().name(), "none" | "mprescripts") => {
+                    Box::new(parse_node(b)?)
+                }
+                _ => {
+                    return Err(ParseError::InvalidStructure {
+                        element: "mmultiscripts",
+                        reason: "missing base",
+                    })
+                }
+            };
+            // Flat script slots, split at <mprescripts/>; <none/> is an
+            // empty slot.
+            let mut sections: [Vec<Option<Node>>; 2] = [Vec::new(), Vec::new()];
+            let mut section = 0;
+            for child in elements {
+                match child.tag_name().name() {
+                    "mprescripts" => {
+                        if section == 1 {
+                            return Err(ParseError::InvalidStructure {
+                                element: "mmultiscripts",
+                                reason: "more than one <mprescripts/>",
+                            });
+                        }
+                        section = 1;
+                    }
+                    "none" => sections[section].push(None),
+                    _ => sections[section].push(Some(parse_node(child)?)),
+                }
+            }
+            let pair_up = |slots: Vec<Option<Node>>| {
+                if !slots.len().is_multiple_of(2) {
+                    return Err(ParseError::InvalidStructure {
+                        element: "mmultiscripts",
+                        reason: "scripts must come in sub/sup pairs",
+                    });
+                }
+                let mut pairs = Vec::with_capacity(slots.len() / 2);
+                let mut it = slots.into_iter();
+                while let (Some(sub), Some(sup)) = (it.next(), it.next()) {
+                    pairs.push((sub, sup));
+                }
+                Ok(pairs)
+            };
+            let [post_slots, pre_slots] = sections;
+            Ok(Node::MultiScripts {
+                base,
+                post: pair_up(post_slots)?,
+                pre: pair_up(pre_slots)?,
             })
         }
         "mtable" => {

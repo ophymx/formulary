@@ -285,6 +285,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
         Node::Scripts { base, sub, sup } => {
             layout_scripts(ctx, base, sub.as_deref(), sup.as_deref())
         }
+        Node::MultiScripts { base, post, pre } => layout_multiscripts(ctx, base, post, pre),
         Node::UnderOver {
             base,
             under,
@@ -651,6 +652,158 @@ fn layout_scripts(ctx: &Ctx, base: &Node, sub: Option<&Node>, sup: Option<&Node>
     layout_scripts_on(ctx, base_box, sub, sup)
 }
 
+/// Shared vertical shifts for any number of sub/superscripts on one base
+/// (the TeX u/v computation, taken as maxima over all scripts so multiple
+/// pairs align on common baselines).
+fn script_shifts(
+    ctx: &Ctx,
+    base: &MathBox,
+    subs: &[&MathBox],
+    sups: &[&MathBox],
+) -> (f32, f32) {
+    let c = ctx.font.constants();
+
+    // Superscript shift above the baseline (u in TeX terms).
+    let mut sup_shift = 0.0_f32;
+    if !sups.is_empty() {
+        let preferred = if ctx.cramped {
+            ctx.constant(c.superscript_shift_up_cramped())
+        } else {
+            ctx.constant(c.superscript_shift_up())
+        };
+        sup_shift = preferred
+            // Don't drop the script baseline too far below the base's top.
+            .max(base.ascent - ctx.constant(c.superscript_baseline_drop_max()));
+        for s in sups {
+            // Keep the superscript's bottom ink above SuperscriptBottomMin.
+            sup_shift = sup_shift.max(ctx.constant(c.superscript_bottom_min()) + s.descent);
+        }
+    }
+
+    // Subscript shift below the baseline (v in TeX terms).
+    let mut sub_shift = 0.0_f32;
+    if !subs.is_empty() {
+        sub_shift = ctx
+            .constant(c.subscript_shift_down())
+            // Hang the script baseline at least this far below the base's bottom.
+            .max(base.descent + ctx.constant(c.subscript_baseline_drop_min()));
+        for s in subs {
+            // Keep the subscript's top ink below SubscriptTopMax.
+            sub_shift = sub_shift.max(s.ascent - ctx.constant(c.subscript_top_max()));
+        }
+    }
+
+    // With both, keep them apart: grow the gap first by raising the
+    // superscript (up to SuperscriptBottomMaxWithSubscript), then by pushing
+    // the subscript down.
+    if !subs.is_empty() && !sups.is_empty() {
+        let sup_descent = sups.iter().map(|s| s.descent).fold(f32::MIN, f32::max);
+        let sub_ascent = subs.iter().map(|s| s.ascent).fold(f32::MIN, f32::max);
+        let gap = (sup_shift - sup_descent) + (sub_shift - sub_ascent);
+        let mut deficit = ctx.constant(c.sub_superscript_gap_min()) - gap;
+        if deficit > 0.0 {
+            let headroom = ctx.constant(c.superscript_bottom_max_with_subscript())
+                - (sup_shift - sup_descent);
+            if headroom > 0.0 {
+                let up = deficit.min(headroom);
+                sup_shift += up;
+                deficit -= up;
+            }
+            sub_shift += deficit.max(0.0);
+        }
+    }
+    (sup_shift, sub_shift)
+}
+
+/// `<mmultiscripts>`: prescript columns (scripts right-aligned per column)
+/// before the base, then postscript columns after it, all sharing the
+/// vertical shifts so script baselines align across columns.
+fn layout_multiscripts(
+    ctx: &Ctx,
+    base: &Node,
+    post: &[(Option<Node>, Option<Node>)],
+    pre: &[(Option<Node>, Option<Node>)],
+) -> MathBox {
+    let base_box = layout_operator_base(ctx, base);
+    let lay = |pairs: &[(Option<Node>, Option<Node>)]| -> Vec<(Option<MathBox>, Option<MathBox>)> {
+        pairs
+            .iter()
+            .map(|(sub, sup)| {
+                (
+                    sub.as_ref().map(|n| layout_node(&ctx.script_child(true), n)),
+                    sup.as_ref().map(|n| layout_node(&ctx.script_child(false), n)),
+                )
+            })
+            .collect()
+    };
+    let post_boxes = lay(post);
+    let pre_boxes = lay(pre);
+
+    let all_subs: Vec<&MathBox> = post_boxes
+        .iter()
+        .chain(&pre_boxes)
+        .filter_map(|(s, _)| s.as_ref())
+        .collect();
+    let all_sups: Vec<&MathBox> = post_boxes
+        .iter()
+        .chain(&pre_boxes)
+        .filter_map(|(_, s)| s.as_ref())
+        .collect();
+    let (sup_shift, sub_shift) = script_shifts(ctx, &base_box, &all_subs, &all_sups);
+
+    let mut out = MathBox::empty();
+    let mut x = 0.0_f32;
+    let place = |out: &mut MathBox, b: MathBox, dx: f32, dy: f32| {
+        out.ascent = out.ascent.max(b.ascent - dy);
+        out.descent = out.descent.max(b.descent + dy);
+        for mut item in b.items {
+            item.translate(dx, dy);
+            out.items.push(item);
+        }
+    };
+
+    // Prescript columns: right-aligned within each column.
+    for (sub, sup) in pre_boxes {
+        let col = sub
+            .as_ref()
+            .map_or(0.0, |b| b.width)
+            .max(sup.as_ref().map_or(0.0, |b| b.width));
+        if let Some(b) = sub {
+            let dx = x + col - b.width;
+            place(&mut out, b, dx, sub_shift);
+        }
+        if let Some(b) = sup {
+            let dx = x + col - b.width;
+            place(&mut out, b, dx, -sup_shift);
+        }
+        x += col;
+    }
+
+    let base_width = base_box.width;
+    let base_ic = base_box.italic_correction;
+    place(&mut out, base_box, x, 0.0);
+    x += base_width;
+
+    // Postscript columns: the first column's subscript tucks by the base's
+    // italic correction, as in msubsup.
+    for (i, (sub, sup)) in post_boxes.into_iter().enumerate() {
+        let ic = if i == 0 { base_ic } else { 0.0 };
+        let sub_x = (x - ic).max(0.0);
+        let mut col_end = x;
+        if let Some(b) = sub {
+            col_end = col_end.max(sub_x + b.width);
+            place(&mut out, b, sub_x, sub_shift);
+        }
+        if let Some(b) = sup {
+            col_end = col_end.max(x + b.width);
+            place(&mut out, b, x, -sup_shift);
+        }
+        x = col_end;
+    }
+    out.width = x + ctx.constant(ctx.font.constants().space_after_script());
+    out
+}
+
 /// Script attachment to an already-laid base (shared with embellished
 /// stretchy operators, whose base is stretched before scripts attach).
 fn layout_scripts_on(
@@ -661,52 +814,10 @@ fn layout_scripts_on(
 ) -> MathBox {
     let sub_box = sub.map(|n| layout_node(&ctx.script_child(true), n));
     let sup_box = sup.map(|n| layout_node(&ctx.script_child(false), n));
-
+    let subs: Vec<&MathBox> = sub_box.iter().collect();
+    let sups: Vec<&MathBox> = sup_box.iter().collect();
+    let (sup_shift, sub_shift) = script_shifts(ctx, &base_box, &subs, &sups);
     let c = ctx.font.constants();
-
-    // Superscript shift above the baseline (u in TeX terms).
-    let mut sup_shift = 0.0_f32;
-    if let Some(s) = &sup_box {
-        let preferred = if ctx.cramped {
-            ctx.constant(c.superscript_shift_up_cramped())
-        } else {
-            ctx.constant(c.superscript_shift_up())
-        };
-        sup_shift = preferred
-            // Don't drop the script baseline too far below the base's top.
-            .max(base_box.ascent - ctx.constant(c.superscript_baseline_drop_max()))
-            // Keep the superscript's bottom ink above SuperscriptBottomMin.
-            .max(ctx.constant(c.superscript_bottom_min()) + s.descent);
-    }
-
-    // Subscript shift below the baseline (v in TeX terms).
-    let mut sub_shift = 0.0_f32;
-    if let Some(s) = &sub_box {
-        sub_shift = ctx
-            .constant(c.subscript_shift_down())
-            // Hang the script baseline at least this far below the base's bottom.
-            .max(base_box.descent + ctx.constant(c.subscript_baseline_drop_min()))
-            // Keep the subscript's top ink below SubscriptTopMax.
-            .max(s.ascent - ctx.constant(c.subscript_top_max()));
-    }
-
-    // With both scripts, keep them apart: grow the gap first by raising the
-    // superscript (up to SuperscriptBottomMaxWithSubscript), then by pushing
-    // the subscript down.
-    if let (Some(sb), Some(sp)) = (&sub_box, &sup_box) {
-        let gap = (sup_shift - sp.descent) + (sub_shift - sb.ascent);
-        let mut deficit = ctx.constant(c.sub_superscript_gap_min()) - gap;
-        if deficit > 0.0 {
-            let headroom = ctx.constant(c.superscript_bottom_max_with_subscript())
-                - (sup_shift - sp.descent);
-            if headroom > 0.0 {
-                let up = deficit.min(headroom);
-                sup_shift += up;
-                deficit -= up;
-            }
-            sub_shift += deficit.max(0.0);
-        }
-    }
 
     // Superscripts attach at the full advance; subscripts tuck left by the
     // base's italic correction (the classic ∫ lower-limit tuck).

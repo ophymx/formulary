@@ -220,9 +220,9 @@ fn wpt_corpus() {
                         Err(ParseError::Unsupported { element }) => {
                             *unsupported.entry(element).or_default() += 1;
                         }
-                        Err(ParseError::WrongArity { element, .. }) => {
+                        Err(ParseError::WrongArity { .. })
+                        | Err(ParseError::InvalidStructure { .. }) => {
                             arity_errors += 1;
-                            let _ = element;
                         }
                         Err(ParseError::NotMath { .. }) => xml_errors += 1,
                     }

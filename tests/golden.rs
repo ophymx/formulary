@@ -882,6 +882,74 @@ fn mtable_rejects_stray_children() {
 }
 
 #[test]
+fn golden_multiscripts() {
+    // Riemann tensor-ish: base R, postscripts ρ (sup) then σμν pattern via
+    // pairs, prescripts j/k.
+    check_golden(
+        "multiscripts",
+        r#"<math><mmultiscripts><mi>R</mi><mi>i</mi><none/><none/><mi>j</mi><mprescripts/><mi>k</mi><mi>l</mi></mmultiscripts></math>"#,
+    );
+}
+
+#[test]
+fn multiscripts_geometry_sane() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    // One postscript pair matches msubsup's layout.
+    let multi = layout(
+        &parse("<math><mmultiscripts><mi>x</mi><mi>i</mi><mn>2</mn></mmultiscripts></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let subsup = layout(
+        &parse("<math><msubsup><mi>x</mi><mi>i</mi><mn>2</mn></msubsup></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    // Same geometry; item order may differ (sub/sup emission order).
+    assert_eq!(
+        (multi.width, multi.ascent, multi.descent),
+        (subsup.width, subsup.ascent, subsup.descent)
+    );
+    let mut mg = glyphs(&multi);
+    let mut sg = glyphs(&subsup);
+    let key = |g: &(f32, f32, f32)| (g.0.to_bits(), g.1.to_bits());
+    mg.sort_by_key(key);
+    sg.sort_by_key(key);
+    assert_eq!(mg, sg);
+
+    // Prescripts land left of the base; script baselines align across
+    // columns (all sups share y, all subs share y).
+    let tensor = layout(
+        &parse("<math><mmultiscripts><mi>R</mi><mi>i</mi><none/><none/><mi>j</mi><mprescripts/><mi>k</mi><mi>l</mi></mmultiscripts></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    // Glyphs: base R first (placement order: pre pair k/l, base, posts) —
+    // actually pre places before base in the item list.
+    let g = glyphs(&tensor);
+    assert_eq!(g.len(), 5, "k, l, R, i, j");
+    let (k, l, r, i, j) = (g[0], g[1], g[2], g[3], g[4]);
+    assert!(k.0 < r.0 && l.0 < r.0, "prescripts sit left of the base");
+    assert!(i.0 > r.0 && j.0 > r.0, "postscripts sit right of the base");
+    assert!((k.1 - i.1).abs() < 1e-3, "subscript baselines align");
+    assert!((l.1 - j.1).abs() < 1e-3, "superscript baselines align");
+    assert!(k.1 > 0.0 && l.1 < 0.0);
+
+    // Structure errors.
+    assert!(parse("<math><mmultiscripts><mi>x</mi><mi>i</mi></mmultiscripts></math>").is_err());
+    assert!(parse(
+        "<math><mmultiscripts><mi>x</mi><mprescripts/><mi>a</mi><mi>b</mi><mprescripts/></mmultiscripts></math>"
+    )
+    .is_err());
+    assert!(parse("<math><mmultiscripts></mmultiscripts></math>").is_err());
+}
+
+#[test]
 fn underover_wrong_arity_errors() {
     assert!(parse("<math><mover><mi>x</mi></mover></math>").is_err());
     assert!(parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>").is_err());
