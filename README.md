@@ -49,7 +49,7 @@ Supported: token elements (`mi` `mn` `mo` `mtext` `ms`) with `mathvariant`
 styling, `mrow`, `mfrac` (incl. `linethickness`, with `0` giving bar-less
 binomial stacks), `msqrt`/`mroot`, `msub`/`msup`/`msubsup`,
 `munder`/`mover`/`munderover` (accents, movable limits), `mmultiscripts`
-(+ `mprescripts`/`none`), `mtable`/`mtr`/`mtd` (`columnalign`, Core cell
+(+ `mprescripts`/`none`), `mtable`/`mtr`/`mtd` (`columnalign`, `rowspan`/`columnspan`, Core cell
 padding), `mspace`, `mstyle`, `mpadded`, `mphantom`, `merror`,
 `semantics`/`maction` (first child), deprecated `mfenced` (desugared);
 operator dictionary spacing and forms, vertically and horizontally stretchy
@@ -67,9 +67,8 @@ rarely ship pre-mirrored forms), with paired delimiters swapped to their
 Unicode mirrors. Token content itself stays logical-order (no Arabic
 bidi/shaping yet).
 
-Not (yet) supported: `menclose` (not in MathML Core), `mtable` spans,
-Arabic-script token content, content MathML, HTML inside token elements,
-linebreaking.
+Not (yet) supported: `menclose` (not in MathML Core), Arabic-script token
+content, content MathML, HTML inside token elements, linebreaking.
 
 ### Error handling
 
