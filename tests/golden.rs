@@ -124,7 +124,7 @@ fn rejects_non_math_root() {
 
 #[test]
 fn unsupported_element_errors() {
-    assert!(parse("<math><msqrt><mn>2</mn></msqrt></math>").is_err());
+    assert!(parse("<math><munder><mo>&#x2211;</mo><mi>n</mi></munder></math>").is_err());
 }
 
 #[test]
@@ -224,6 +224,101 @@ fn scripts_geometry_sane() {
     let g = glyphs(&nested);
     assert_eq!(g.len(), 3);
     assert!(g[2].2 < g[1].2 && g[1].2 < g[0].2);
+}
+
+#[test]
+fn golden_msqrt() {
+    check_golden(
+        "msqrt",
+        "<math><msqrt><mi>x</mi><mo>+</mo><mn>1</mn></msqrt></math>",
+    );
+}
+
+#[test]
+fn golden_msqrt_tall() {
+    check_golden(
+        "msqrt_tall",
+        r#"<math display="block"><msqrt><mfrac><mn>1</mn><mi>x</mi></mfrac></msqrt></math>"#,
+    );
+}
+
+#[test]
+fn golden_mroot() {
+    check_golden("mroot", "<math><mroot><mi>x</mi><mn>3</mn></mroot></math>");
+}
+
+#[test]
+fn radical_geometry_sane() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    let plain = layout(
+        &parse("<math><mrow><mi>x</mi><mo>+</mo><mn>1</mn></mrow></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let sqrt = layout(
+        &parse("<math><msqrt><mi>x</mi><mo>+</mo><mn>1</mn></msqrt></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    // Radical glyph before the radicand, overbar above it.
+    assert_eq!(glyphs(&sqrt).len(), 4);
+    assert!(sqrt.width > plain.width);
+    assert!(sqrt.ascent > plain.ascent, "bar and gap must add height");
+    let rules: Vec<_> = sqrt
+        .items
+        .iter()
+        .filter_map(|i| match *i {
+            formulary::Item::Rule { x, y, w, h } => Some((x, y, w, h)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rules.len(), 1);
+    let (rx, ry, rw, _) = rules[0];
+    assert!((rw - plain.width).abs() < 1e-3, "bar spans the radicand");
+    assert!(ry < -plain.ascent, "bar sits above the radicand's ink");
+    assert!(rx > 0.0, "bar starts after the radical glyph");
+
+    // A tall radicand must select a taller radical variant: the radical
+    // glyph's ink must reach from the bar down past the radicand's descent.
+    let tall = layout(
+        &parse("<math><msqrt><mfrac><mn>1</mn><mi>x</mi></mfrac></msqrt></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let sqrt_radical_id = match sqrt.items[0] {
+        formulary::Item::Glyph { id, .. } => id,
+        _ => panic!("radical glyph first"),
+    };
+    let tall_radical_id = match tall.items[0] {
+        formulary::Item::Glyph { id, .. } => id,
+        _ => panic!("radical glyph first"),
+    };
+    assert_ne!(
+        sqrt_radical_id, tall_radical_id,
+        "taller content must pick a taller radical variant"
+    );
+    assert!(tall.ascent + tall.descent > sqrt.ascent + sqrt.descent);
+
+    // mroot: degree glyph is present, small, and raised above the baseline.
+    let root = layout(
+        &parse("<math><mroot><mi>x</mi><mn>3</mn></mroot></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&root);
+    assert_eq!(g.len(), 3, "degree, radical, radicand");
+    let degree = g[0];
+    assert!(degree.2 < 16.0 * 0.6, "degree renders at script-script size");
+    assert!(degree.1 < 0.0, "degree is raised");
+    let sqrt_x = layout(
+        &parse("<math><msqrt><mi>x</mi></msqrt></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(root.width > sqrt_x.width, "degree widens the box");
 }
 
 #[test]

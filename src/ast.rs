@@ -47,4 +47,8 @@ pub enum Node {
         sub: Option<Box<Node>>,
         sup: Option<Box<Node>>,
     },
+    /// `<msqrt>` — children form an implied `mrow` under the radical.
+    Sqrt(Vec<Node>),
+    /// `<mroot>` — radicand plus explicit degree. Exactly two children.
+    Root { base: Box<Node>, index: Box<Node> },
 }

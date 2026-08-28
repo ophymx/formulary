@@ -121,6 +121,20 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
             };
             Ok(Node::Scripts { base, sub, sup })
         }
+        "msqrt" => Ok(Node::Sqrt(parse_children(node)?)),
+        "mroot" => {
+            let mut children = parse_children(node)?;
+            if children.len() != 2 {
+                return Err(ParseError::WrongArity {
+                    element: "mroot",
+                    expected: 2,
+                    found: children.len(),
+                });
+            }
+            let index = Box::new(children.pop().expect("len checked"));
+            let base = Box::new(children.pop().expect("len checked"));
+            Ok(Node::Root { base, index })
+        }
         other => Err(ParseError::Unsupported {
             element: other.to_string(),
         }),

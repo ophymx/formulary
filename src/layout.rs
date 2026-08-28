@@ -151,6 +151,29 @@ impl<'a, 'f> Ctx<'a, 'f> {
         Ctx::derive(self.font, self.base_size, level, false, self.cramped || cramped)
     }
 
+    /// Child context under a radical: same size and style, but cramped.
+    fn cramped_child(&self) -> Self {
+        Ctx::derive(
+            self.font,
+            self.base_size,
+            self.script_level,
+            self.display_style,
+            true,
+        )
+    }
+
+    /// Child context for an `<mroot>` degree: two script levels up,
+    /// displaystyle off (TeX's scriptscript style).
+    fn root_degree_child(&self) -> Self {
+        Ctx::derive(
+            self.font,
+            self.base_size,
+            self.script_level.saturating_add(2),
+            false,
+            self.cramped,
+        )
+    }
+
     /// Child context for a subscript or superscript: script level rises,
     /// displaystyle switches off. Subscripts are additionally cramped.
     fn script_child(&self, cramped: bool) -> Self {
@@ -208,7 +231,91 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
         Node::Scripts { base, sub, sup } => {
             layout_scripts(ctx, base, sub.as_deref(), sup.as_deref())
         }
+        Node::Sqrt(children) => {
+            let content = layout_row(&ctx.cramped_child(), children);
+            layout_radical(ctx, content, None)
+        }
+        Node::Root { base, index } => {
+            let content = layout_node(&ctx.cramped_child(), base);
+            let degree = layout_node(&ctx.root_degree_child(), index);
+            layout_radical(ctx, content, Some(degree))
+        }
     }
+}
+
+const RADICAL_CHAR: char = '\u{221A}';
+
+/// `<msqrt>`/`<mroot>` per the OpenType MATH radical constants: the radical
+/// glyph is the vertical variant covering the radicand's height plus the
+/// minimum gap and rule; the overbar continues from its top across the
+/// radicand, with RadicalExtraAscender white space above.
+fn layout_radical(ctx: &Ctx, content: MathBox, degree: Option<MathBox>) -> MathBox {
+    let c = ctx.font.constants();
+    let gap_min = if ctx.display_style {
+        ctx.constant(c.radical_display_style_vertical_gap())
+    } else {
+        ctx.constant(c.radical_vertical_gap())
+    };
+    let thickness = ctx.constant(c.radical_rule_thickness());
+
+    // Pick a radical glyph tall enough for radicand + gap + rule.
+    let target = content.ascent + content.descent + gap_min + thickness;
+    let glyph = ctx
+        .font
+        .glyph_index(RADICAL_CHAR)
+        .map(|base| ctx.font.vertical_variant(base, target / ctx.scale));
+    let glyph_ink = glyph.and_then(|g| ctx.font.ink_box(g));
+    let glyph_height = glyph_ink
+        .map_or(0.0, |ink| f32::from(ink.y_max - ink.y_min) * ctx.scale);
+
+    // A taller-than-needed glyph centers its excess: half widens the gap,
+    // half hangs below the radicand (TeX rule 11).
+    let gap = gap_min + (glyph_height - target).max(0.0) / 2.0;
+    // Top edge of the overbar; the radical glyph's ink top aligns with it.
+    let bar_top = -(content.ascent + gap + thickness);
+
+    let mut out = MathBox::empty();
+    out.ascent = content.ascent + gap + thickness + ctx.constant(c.radical_extra_ascender());
+    out.descent = content.descent.max(bar_top + glyph_height);
+
+    // Horizontal assembly: [kern degree kern] glyph, radicand under the bar.
+    let mut x = 0.0;
+    if let Some(deg) = degree {
+        x += ctx.constant(c.radical_kern_before_degree());
+        // Degree bottom sits this fraction of the glyph's span above its bottom.
+        let raise = f32::from(c.radical_degree_bottom_raise_percent()) / 100.0;
+        let glyph_bottom = bar_top + glyph_height;
+        let deg_baseline = glyph_bottom - raise * glyph_height - deg.descent;
+        out.ascent = out.ascent.max(deg.ascent - deg_baseline);
+        out.descent = out.descent.max(deg_baseline + deg.descent);
+        for mut item in deg.items {
+            item.translate(x, deg_baseline);
+            out.items.push(item);
+        }
+        x += deg.width + ctx.constant(c.radical_kern_after_degree());
+        x = x.max(0.0); // a large negative kern must not push the glyph out
+    }
+    if let (Some(g), Some(ink)) = (glyph, glyph_ink) {
+        out.items.push(Item::Glyph {
+            id: g,
+            x,
+            y: bar_top + f32::from(ink.y_max) * ctx.scale,
+            size: ctx.size,
+        });
+        x += ctx.font.advance(g) * ctx.scale;
+    }
+    out.items.push(Item::Rule {
+        x,
+        y: bar_top,
+        w: content.width,
+        h: thickness,
+    });
+    for mut item in content.items {
+        item.translate(x, 0.0);
+        out.items.push(item);
+    }
+    out.width = x + content.width;
+    out
 }
 
 /// `<msub>`/`<msup>`/`<msubsup>` per the OpenType MATH script constants

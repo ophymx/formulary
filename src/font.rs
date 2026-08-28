@@ -76,6 +76,33 @@ impl<'a> MathFont<'a> {
         self.face.glyph_bounding_box(glyph)
     }
 
+    /// The smallest vertical variant of `glyph` whose advance covers
+    /// `target` design units, or the largest available if none do, or
+    /// `glyph` itself if the font has no construction for it.
+    ///
+    /// Glyph assembly (building arbitrary heights from extender parts) is not
+    /// implemented yet; very tall radicals/delimiters top out at the largest
+    /// pre-drawn variant.
+    pub(crate) fn vertical_variant(&self, glyph: GlyphId, target: f32) -> GlyphId {
+        let Some(construction) = self
+            .face
+            .tables()
+            .math
+            .and_then(|m| m.variants)
+            .and_then(|v| v.vertical_constructions.get(glyph))
+        else {
+            return glyph;
+        };
+        let mut best = glyph;
+        for v in construction.variants {
+            best = v.variant_glyph;
+            if f32::from(v.advance_measurement) >= target {
+                break;
+            }
+        }
+        best
+    }
+
     /// Font-wide ascent/descent in design units (descent returned positive).
     pub(crate) fn line_metrics(&self) -> (f32, f32) {
         (
