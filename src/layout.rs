@@ -12,7 +12,7 @@
 //! size changes rather than scaling a previous result.
 
 use crate::ast::{DisplayMode, Form, Length, MathRoot, Node, ScriptLevel};
-use crate::font::{GlyphId, MathFont};
+use crate::font::{GlyphId, MathFont, Stretched};
 use crate::mathvariant::to_math_italic;
 use crate::opdict;
 
@@ -339,15 +339,16 @@ fn layout_radical(ctx: &Ctx, content: MathBox, degree: Option<MathBox>) -> MathB
     };
     let thickness = ctx.constant(c.radical_rule_thickness());
 
-    // Pick a radical glyph tall enough for radicand + gap + rule.
+    // Pick or assemble a radical glyph tall enough for radicand + gap + rule.
     let target = content.ascent + content.descent + gap_min + thickness;
-    let glyph = ctx
+    let stretched = ctx
         .font
         .glyph_index(RADICAL_CHAR)
-        .map(|base| ctx.font.vertical_variant(base, target / ctx.scale));
-    let glyph_ink = glyph.and_then(|g| ctx.font.ink_box(g));
-    let glyph_height = glyph_ink
-        .map_or(0.0, |ink| f32::from(ink.y_max - ink.y_min) * ctx.scale);
+        .map(|base| ctx.font.stretch_vertical(base, target / ctx.scale));
+    let glyph_height = stretched.as_ref().map_or(0.0, |s| {
+        let mut probe = Vec::new();
+        emit_stretched(ctx, s, 0.0, 0.0, &mut probe).0
+    });
 
     // A taller-than-needed glyph centers its excess: half widens the gap,
     // half hangs below the radicand (TeX rule 11).
@@ -376,14 +377,9 @@ fn layout_radical(ctx: &Ctx, content: MathBox, degree: Option<MathBox>) -> MathB
         x += deg.width + ctx.constant(c.radical_kern_after_degree());
         x = x.max(0.0); // a large negative kern must not push the glyph out
     }
-    if let (Some(g), Some(ink)) = (glyph, glyph_ink) {
-        out.items.push(Item::Glyph {
-            id: g,
-            x,
-            y: bar_top + f32::from(ink.y_max) * ctx.scale,
-            size: ctx.size,
-        });
-        x += ctx.font.advance(g) * ctx.scale;
+    if let Some(s) = &stretched {
+        let (_, advance) = emit_stretched(ctx, s, x, bar_top, &mut out.items);
+        x += advance;
     }
     out.items.push(Item::Rule {
         x,
@@ -541,7 +537,7 @@ fn layout_frac(ctx: &Ctx, num: &Node, den: &Node) -> MathBox {
 }
 
 /// Horizontal concatenation on a shared baseline, with operator-dictionary
-/// spacing around `<mo>` children.
+/// spacing around `<mo>` children and vertical stretching of stretchy ones.
 fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
     // Positions among non-space-like siblings decide each operator's form.
     let significant: Vec<usize> = children
@@ -551,16 +547,62 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
         .map(|(i, _)| i)
         .collect();
 
-    let mut out = MathBox::empty();
+    // Pass 1: lay out everything except vertically-stretchy operators, which
+    // must wait until the extent of their siblings is known.
+    enum Slot {
+        Fixed(MathBox),
+        Stretchy { c: char, symmetric: bool },
+    }
+    let mut slots: Vec<(f32, f32, Slot)> = Vec::with_capacity(children.len());
+    let (mut max_ascent, mut max_descent) = (0.0_f32, 0.0_f32);
     for (i, child) in children.iter().enumerate() {
-        let (lspace, rspace) = match child {
-            Node::Operator { text, attrs } => {
-                let form = attrs.form.unwrap_or_else(|| infer_form(i, &significant));
-                operator_spacing(ctx, text, form, attrs)
+        let slot = if let Node::Operator { text, attrs } = child {
+            let form = attrs.form.unwrap_or_else(|| infer_form(i, &significant));
+            let (dict_l, dict_r, flags) = dictionary_entry(text, form);
+            let em = ctx.size / 18.0;
+            let lspace = attrs
+                .lspace
+                .map_or(f32::from(dict_l) * em, |l| ctx.resolve(l, 0.0).max(0.0));
+            let rspace = attrs
+                .rspace
+                .map_or(f32::from(dict_r) * em, |l| ctx.resolve(l, 0.0).max(0.0));
+            let single = single_char(text);
+            let stretchy = attrs.stretchy.unwrap_or(flags & opdict::STRETCHY != 0)
+                && flags & opdict::HORIZONTAL == 0;
+            match single {
+                Some(c) if stretchy && ctx.font.glyph_index(c).is_some() => {
+                    let symmetric =
+                        attrs.symmetric.unwrap_or(flags & opdict::SYMMETRIC != 0);
+                    (lspace, rspace, Slot::Stretchy { c, symmetric })
+                }
+                Some(c)
+                    if ctx.display_style
+                        && attrs.largeop.unwrap_or(flags & opdict::LARGEOP != 0) =>
+                {
+                    let b = layout_large_operator(ctx, c);
+                    (lspace, rspace, Slot::Fixed(b))
+                }
+                _ => (lspace, rspace, Slot::Fixed(layout_text_run(ctx, text))),
             }
-            _ => (0.0, 0.0),
+        } else {
+            (0.0, 0.0, Slot::Fixed(layout_node(ctx, child)))
         };
-        let mut b = layout_node(ctx, child);
+        if let (_, _, Slot::Fixed(b)) = &slot {
+            max_ascent = max_ascent.max(b.ascent);
+            max_descent = max_descent.max(b.descent);
+        }
+        slots.push(slot);
+    }
+
+    // Pass 2: stretch deferred operators to the row's extent, then assemble.
+    let mut out = MathBox::empty();
+    for (lspace, rspace, slot) in slots {
+        let mut b = match slot {
+            Slot::Fixed(b) => b,
+            Slot::Stretchy { c, symmetric } => {
+                layout_stretchy_operator(ctx, c, symmetric, max_ascent, max_descent)
+            }
+        };
         for item in &mut b.items {
             item.translate(out.width + lspace, 0.0);
         }
@@ -569,6 +611,108 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
         out.ascent = out.ascent.max(b.ascent);
         out.descent = out.descent.max(b.descent);
     }
+    out
+}
+
+fn single_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
+/// Emit a [`Stretched`] glyph with its ink top at `top` (layout units),
+/// returning `(ink height, advance width)` in layout units.
+fn emit_stretched(ctx: &Ctx, stretched: &Stretched, x: f32, top: f32, items: &mut Vec<Item>) -> (f32, f32) {
+    match stretched {
+        Stretched::Glyph(g) => {
+            let Some(ink) = ctx.font.ink_box(*g) else {
+                return (0.0, ctx.font.advance(*g) * ctx.scale);
+            };
+            items.push(Item::Glyph {
+                id: *g,
+                x,
+                y: top + f32::from(ink.y_max) * ctx.scale,
+                size: ctx.size,
+            });
+            (
+                f32::from(ink.y_max - ink.y_min) * ctx.scale,
+                ctx.font.advance(*g) * ctx.scale,
+            )
+        }
+        Stretched::Assembly { parts, height } => {
+            let height = height * ctx.scale;
+            let bottom = top + height;
+            let mut advance = 0.0_f32;
+            for &(g, offset) in parts {
+                advance = advance.max(ctx.font.advance(g) * ctx.scale);
+                let Some(ink) = ctx.font.ink_box(g) else { continue };
+                // Part's ink bottom sits `offset` above the assembly bottom.
+                items.push(Item::Glyph {
+                    id: g,
+                    x,
+                    y: bottom - offset * ctx.scale + f32::from(ink.y_min) * ctx.scale,
+                    size: ctx.size,
+                });
+            }
+            (height, advance)
+        }
+    }
+}
+
+/// A vertically-stretchy operator covering the row's extent: symmetric ones
+/// (fences) grow equally about the math axis, others cover ascent + descent
+/// directly. Excess from a too-tall variant is centered over the target.
+fn layout_stretchy_operator(
+    ctx: &Ctx,
+    c: char,
+    symmetric: bool,
+    max_ascent: f32,
+    max_descent: f32,
+) -> MathBox {
+    let glyph = ctx.font.glyph_index(c).expect("checked by caller");
+    let axis = ctx.constant(ctx.font.constants().axis_height());
+    let (target, target_ascent) = if symmetric {
+        let above = (max_ascent - axis).max(max_descent + axis).max(0.0);
+        (2.0 * above, axis + above)
+    } else {
+        ((max_ascent + max_descent).max(0.0), max_ascent)
+    };
+    if target <= 0.0 {
+        // Nothing to cover (row of only stretchy operators): natural glyph.
+        return layout_text_run(ctx, &c.to_string());
+    }
+    let stretched = ctx.font.stretch_vertical(glyph, target / ctx.scale);
+    let mut out = MathBox::empty();
+    // Probe the actual ink height first to center any excess.
+    let mut probe = Vec::new();
+    let (height, _) = emit_stretched(ctx, &stretched, 0.0, 0.0, &mut probe);
+    let ascent = target_ascent + (height - target).max(0.0) / 2.0;
+    let (height, advance) = emit_stretched(ctx, &stretched, 0.0, -ascent, &mut out.items);
+    out.width = advance;
+    out.ascent = ascent;
+    out.descent = height - ascent;
+    out
+}
+
+/// A large operator (∫, ∑, …) in display style: the variant reaching
+/// DisplayOperatorMinHeight, vertically centered on the math axis.
+fn layout_large_operator(ctx: &Ctx, c: char) -> MathBox {
+    let Some(glyph) = ctx.font.glyph_index(c) else {
+        return layout_text_run(ctx, &c.to_string());
+    };
+    let min_height = f32::from(ctx.font.constants().display_operator_min_height());
+    let stretched = ctx.font.stretch_vertical(glyph, min_height);
+    let axis = ctx.constant(ctx.font.constants().axis_height());
+    let mut probe = Vec::new();
+    let (height, _) = emit_stretched(ctx, &stretched, 0.0, 0.0, &mut probe);
+    let ascent = axis + height / 2.0;
+    let mut out = MathBox::empty();
+    let (height, advance) = emit_stretched(ctx, &stretched, 0.0, -ascent, &mut out.items);
+    out.width = advance;
+    out.ascent = ascent;
+    out.descent = height - ascent;
     out
 }
 
@@ -599,19 +743,6 @@ fn infer_form(index: usize, significant: &[usize]) -> Form {
         }
     }
     Form::Infix
-}
-
-/// Resolved lspace/rspace for an operator, in layout units.
-fn operator_spacing(ctx: &Ctx, text: &str, form: Form, attrs: &crate::ast::OperatorAttrs) -> (f32, f32) {
-    let (dict_l, dict_r, _flags) = dictionary_entry(text, form);
-    let em = ctx.size / 18.0;
-    let l = attrs
-        .lspace
-        .map_or(f32::from(dict_l) * em, |len| ctx.resolve(len, 0.0).max(0.0));
-    let r = attrs
-        .rspace
-        .map_or(f32::from(dict_r) * em, |len| ctx.resolve(len, 0.0).max(0.0));
-    (l, r)
 }
 
 /// Dictionary lookup with the spec's fallback chain (requested form, then

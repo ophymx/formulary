@@ -509,6 +509,96 @@ fn operator_spacing_from_dictionary() {
 }
 
 #[test]
+fn golden_stretchy_parens() {
+    check_golden(
+        "stretchy_parens",
+        r#"<math display="block"><mo>(</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>)</mo></math>"#,
+    );
+}
+
+#[test]
+fn golden_integral_display() {
+    check_golden(
+        "integral_display",
+        r#"<math display="block"><mo>&#x222B;</mo><msup><mi>x</mi><mn>2</mn></msup><mspace width="0.17em"/><mi>d</mi><mi>x</mi></math>"#,
+    );
+}
+
+#[test]
+fn stretchy_parens_cover_content() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    let small = layout(
+        &parse("<math><mo>(</mo><mi>x</mi><mo>)</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let tall = layout(
+        &parse("<math><mo>(</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>)</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    // Around tall content the paren must be a different, taller glyph.
+    let paren_of = |l: &formulary::Layout| match l.items[0] {
+        formulary::Item::Glyph { id, .. } => id,
+        _ => panic!("expected glyph"),
+    };
+    assert_ne!(paren_of(&small), paren_of(&tall));
+    // Symmetric fences cover both extremes of the content.
+    let content_ascent_covered = tall.ascent;
+    let frac_alone = layout(
+        &parse("<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(content_ascent_covered >= frac_alone.ascent - 1e-3);
+    assert!(tall.descent >= frac_alone.descent - 1e-3);
+
+    // Enormous content exhausts pre-drawn variants and forces assembly:
+    // the fence becomes multiple stacked glyph parts.
+    let huge = layout(
+        &parse(r#"<math><mo>(</mo><mpadded height="120px" depth="120px"><mi>x</mi></mpadded><mo>)</mo></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let glyph_count = glyphs(&huge).len();
+    assert!(
+        glyph_count > 3,
+        "expected assembled fences, got {glyph_count} glyphs"
+    );
+    assert!(huge.ascent + huge.descent >= 240.0 - 1e-3);
+}
+
+#[test]
+fn largeop_grows_in_display_style() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let inline = layout(
+        &parse("<math><mo>&#x222B;</mo><mi>x</mi></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let display = layout(
+        &parse(r#"<math display="block"><mo>&#x222B;</mo><mi>x</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(display.ascent + display.descent > 1.5 * (inline.ascent + inline.descent));
+    // largeop="false" opts out.
+    let opted_out = layout(
+        &parse(r#"<math display="block"><mo largeop="false">&#x222B;</mo><mi>x</mi></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(opted_out.ascent + opted_out.descent < display.ascent + display.descent);
+}
+
+#[test]
 fn scripts_wrong_arity_errors() {
     assert!(parse("<math><msup><mi>x</mi></msup></math>").is_err());
     assert!(parse("<math><msubsup><mi>x</mi><mn>1</mn></msubsup></math>").is_err());

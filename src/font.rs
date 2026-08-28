@@ -24,6 +24,18 @@ impl core::fmt::Display for FontError {
 
 impl std::error::Error for FontError {}
 
+/// A vertically stretched glyph: a single (possibly variant) glyph, or a
+/// bottom-to-top stack of assembly parts.
+pub(crate) enum Stretched {
+    Glyph(GlyphId),
+    /// `parts` are `(glyph, offset of the part's bottom above the assembly
+    /// bottom)` in design units; `height` is the total assembled extent.
+    Assembly {
+        parts: Vec<(GlyphId, f32)>,
+        height: f32,
+    },
+}
+
 /// A font validated to contain an OpenType MATH table.
 ///
 /// Borrows the caller's font bytes; the crate does no I/O.
@@ -76,31 +88,79 @@ impl<'a> MathFont<'a> {
         self.face.glyph_bounding_box(glyph)
     }
 
-    /// The smallest vertical variant of `glyph` whose advance covers
-    /// `target` design units, or the largest available if none do, or
-    /// `glyph` itself if the font has no construction for it.
+    /// A glyph stretched vertically to at least `target` design units.
     ///
-    /// Glyph assembly (building arbitrary heights from extender parts) is not
-    /// implemented yet; very tall radicals/delimiters top out at the largest
-    /// pre-drawn variant.
-    pub(crate) fn vertical_variant(&self, glyph: GlyphId, target: f32) -> GlyphId {
-        let Some(construction) = self
-            .face
-            .tables()
-            .math
-            .and_then(|m| m.variants)
-            .and_then(|v| v.vertical_constructions.get(glyph))
-        else {
-            return glyph;
+    /// Tries the pre-drawn variants smallest-first, then glyph assembly from
+    /// extender parts; falls back to the largest variant (or the base glyph)
+    /// when neither can reach the target.
+    pub(crate) fn stretch_vertical(&self, glyph: GlyphId, target: f32) -> Stretched {
+        let Some(variants) = self.face.tables().math.and_then(|m| m.variants) else {
+            return Stretched::Glyph(glyph);
+        };
+        let Some(construction) = variants.vertical_constructions.get(glyph) else {
+            return Stretched::Glyph(glyph);
         };
         let mut best = glyph;
         for v in construction.variants {
             best = v.variant_glyph;
             if f32::from(v.advance_measurement) >= target {
-                break;
+                return Stretched::Glyph(best);
             }
         }
-        best
+        construction
+            .assembly
+            .and_then(|asm| {
+                self.assemble_vertical(&asm, f32::from(variants.min_connector_overlap), target)
+            })
+            .unwrap_or(Stretched::Glyph(best))
+    }
+
+    /// Stack assembly parts (listed bottom-to-top in the font) to reach
+    /// `target` design units, repeating extenders as needed and distributing
+    /// a uniform connector overlap.
+    fn assemble_vertical(
+        &self,
+        asm: &ttf_parser::math::GlyphAssembly,
+        min_overlap: f32,
+        target: f32,
+    ) -> Option<Stretched> {
+        for repeats in 1..=32u32 {
+            let mut seq: Vec<ttf_parser::math::GlyphPart> = Vec::new();
+            for part in asm.parts {
+                let n = if part.part_flags.extender() { repeats } else { 1 };
+                for _ in 0..n {
+                    seq.push(part);
+                }
+            }
+            if seq.len() < 2 {
+                return None;
+            }
+            let sum: f32 = seq.iter().map(|p| f32::from(p.full_advance)).sum();
+            let joints = (seq.len() - 1) as f32;
+            if sum - min_overlap * joints < target {
+                continue; // not enough parts yet even at minimum overlap
+            }
+            // Overlap that lands exactly on target, kept within what the
+            // connectors allow.
+            let mut overlap = (sum - target) / joints;
+            let max_overlap = seq
+                .windows(2)
+                .map(|w| {
+                    f32::from(w[0].end_connector_length.min(w[1].start_connector_length))
+                })
+                .fold(f32::INFINITY, f32::min);
+            overlap = overlap.clamp(min_overlap, max_overlap.max(min_overlap));
+
+            let mut parts = Vec::with_capacity(seq.len());
+            let mut bottom = 0.0;
+            for p in &seq {
+                parts.push((p.glyph_id, bottom));
+                bottom += f32::from(p.full_advance) - overlap;
+            }
+            let height = bottom + overlap; // last part's advance minus nothing
+            return Some(Stretched::Assembly { parts, height });
+        }
+        None
     }
 
     /// x-height in design units, with a common fallback when the OS/2 table
