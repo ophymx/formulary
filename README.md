@@ -54,8 +54,8 @@ padding), `mspace`, `mstyle`, `mpadded`, `mphantom`, `merror`,
 `semantics`/`maction` (first child), deprecated `mfenced` (desugared);
 operator dictionary spacing and forms, vertically and horizontally stretchy
 operators via glyph variants *and* assembly with `minsize`/`maxsize`
-clamping, large operators in display style, italic correction, `ssty`
-script alternates, display/inline modes (`display` and `displaystyle`) with
+clamping, large operators in display style, italic correction, MathKern
+script cut-ins, top-accent attachment points, `ssty` script alternates, display/inline modes (`display` and `displaystyle`) with
 full script-level and cramped-style propagation; the global style
 attributes (`displaystyle`, `scriptlevel`, `mathsize`, `mathcolor`,
 `mathbackground`) on any element, with colors carried on display-list items

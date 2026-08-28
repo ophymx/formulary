@@ -14,7 +14,7 @@
 use crate::ast::{
     Color, ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, ScriptLevel, StyleOverrides,
 };
-use crate::font::{GlyphId, MathFont, Stretched};
+use crate::font::{GlyphId, KernCorner, MathFont, Stretched};
 use crate::opdict;
 
 /// Caller-supplied layout parameters.
@@ -312,6 +312,9 @@ struct MathBox {
     /// operators; zero for composite constructs), consumed by script
     /// attachment.
     italic_correction: f32,
+    /// The glyph, when this box is exactly one glyph — the case where the
+    /// font's per-glyph MathKern and top-accent-attachment data applies.
+    lone_glyph: Option<GlyphId>,
     items: Vec<Item>,
 }
 
@@ -376,6 +379,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
             ascent: height.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0),
             descent: depth.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0),
             italic_correction: 0.0,
+            lone_glyph: None,
             items: Vec::new(),
         },
         Node::Styled { styles, children } => layout_styled(ctx, styles, children),
@@ -407,6 +411,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
                     .map_or(natural.descent, |l| ctx.resolve(l, natural.descent))
                     .max(0.0),
                 italic_correction: natural.italic_correction,
+                lone_glyph: natural.lone_glyph,
                 items: natural.items,
             };
             for item in &mut out.items {
@@ -693,9 +698,17 @@ fn layout_underover(
     out.width = width;
     out.ascent = base_box.ascent;
     out.descent = base_box.descent;
-    let dx = (width - base_box.width) / 2.0;
+    let base_dx = (width - base_box.width) / 2.0;
+    // Where an accent should attach horizontally: the font's per-glyph
+    // attachment point when the box is a single glyph, else its center.
+    let attach = |b: &MathBox| {
+        b.lone_glyph
+            .and_then(|g| ctx.font.top_accent_attachment(g))
+            .map_or(b.width / 2.0, |v| v * ctx.scale)
+    };
+    let base_attach = base_dx + attach(&base_box);
     for mut item in base_box.items {
-        item.translate(dx, 0.0);
+        item.translate(base_dx, 0.0);
         out.items.push(item);
     }
 
@@ -722,7 +735,12 @@ fn layout_underover(
             )
         };
         out.ascent = out.ascent.max(shift_up + ob.ascent + extra_ascender);
-        let dx = (width - ob.width) / 2.0;
+        // Accents align attachment points; other overscripts center.
+        let dx = if accent {
+            base_attach - attach(&ob)
+        } else {
+            (width - ob.width) / 2.0
+        };
         for mut item in ob.items {
             item.translate(dx, -shift_up);
             out.items.push(item);
@@ -787,6 +805,7 @@ fn layout_stack(ctx: &Ctx, num_box: MathBox, den_box: MathBox) -> MathBox {
         ascent: num_shift + num_box.ascent,
         descent: den_shift + den_box.descent,
         italic_correction: 0.0,
+        lone_glyph: None,
         items: Vec::with_capacity(num_box.items.len() + den_box.items.len()),
     };
     for (bx, dy) in [(num_box, -num_shift), (den_box, den_shift)] {
@@ -806,6 +825,36 @@ fn layout_stack(ctx: &Ctx, num_box: MathBox, den_box: MathBox) -> MathBox {
 fn layout_scripts(ctx: &Ctx, base: &Node, sub: Option<&Node>, sup: Option<&Node>) -> MathBox {
     let base_box = layout_operator_base(ctx, base);
     layout_scripts_on(ctx, base_box, sub, sup)
+}
+
+/// Combined MathKern cut-in for one script against its base: the base's
+/// corner evaluated at the script's near edge, plus the script's corner
+/// evaluated at the base's near edge (both heights relative to the
+/// respective glyph's baseline). Zero unless both sides are single glyphs
+/// with kern data is fine — absent tables contribute nothing.
+#[allow(clippy::too_many_arguments)]
+fn script_kern(
+    ctx: &Ctx,
+    base: &MathBox,
+    script: &MathBox,
+    base_corner: KernCorner,
+    script_corner: KernCorner,
+    base_height: f32,
+    script_height: f32,
+) -> f32 {
+    let mut kern = 0.0;
+    if let Some(g) = base.lone_glyph {
+        kern += ctx.font.math_kern(g, base_corner, base_height / ctx.scale) * ctx.scale;
+    }
+    if let Some(g) = script.lone_glyph {
+        // The script glyph was laid out at script scale.
+        let script_scale = script.items.first().map_or(ctx.scale, |i| match i {
+            Item::Glyph { size, .. } => size / ctx.font.units_per_em(),
+            _ => ctx.scale,
+        });
+        kern += ctx.font.math_kern(g, script_corner, script_height / script_scale) * script_scale;
+    }
+    kern
 }
 
 /// Shared vertical shifts for any number of sub/superscripts on one base
@@ -976,9 +1025,33 @@ fn layout_scripts_on(
     let c = ctx.font.constants();
 
     // Superscripts attach at the full advance; subscripts tuck left by the
-    // base's italic correction (the classic ∫ lower-limit tuck).
-    let sup_x = base_box.width;
-    let sub_x = (base_box.width - base_box.italic_correction).max(0.0);
+    // base's italic correction (the classic ∫ lower-limit tuck). On top of
+    // that, the font's MathKern staircases cut scripts into the base's
+    // corner whitespace at the heights where they actually sit.
+    let sup_kern = sup_box.as_ref().map_or(0.0, |s| {
+        script_kern(
+            ctx,
+            &base_box,
+            s,
+            KernCorner::TopRight,
+            KernCorner::BottomLeft,
+            sup_shift - s.descent,
+            base_box.ascent - sup_shift,
+        )
+    });
+    let sub_kern = sub_box.as_ref().map_or(0.0, |s| {
+        script_kern(
+            ctx,
+            &base_box,
+            s,
+            KernCorner::BottomRight,
+            KernCorner::TopLeft,
+            s.ascent - sub_shift,
+            sub_shift - base_box.descent,
+        )
+    });
+    let sup_x = (base_box.width + sup_kern).max(0.0);
+    let sub_x = (base_box.width - base_box.italic_correction + sub_kern).max(0.0);
     let end = sub_box
         .as_ref()
         .map_or(0.0, |b| sub_x + b.width)
@@ -990,6 +1063,7 @@ fn layout_scripts_on(
         ascent: base_box.ascent,
         descent: base_box.descent,
         italic_correction: 0.0,
+        lone_glyph: None,
         items: base_box.items,
     };
     if let Some(s) = sup_box {
@@ -1060,6 +1134,7 @@ fn layout_frac(
         ascent: num_shift + num_box.ascent,
         descent: den_shift + den_box.descent,
         italic_correction: 0.0,
+        lone_glyph: None,
         items: Vec::with_capacity(num_box.items.len() + den_box.items.len() + 1),
     };
     for (bx, dy) in [(num_box, -num_shift), (den_box, den_shift)] {
@@ -1275,6 +1350,7 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
                 color: ctx.color,
             });
             out.width = ctx.font.advance(*g) * ctx.scale;
+            out.lone_glyph = Some(*g);
             if let Some(ink) = ctx.font.ink_box(*g) {
                 out.ascent = f32::from(ink.y_max) * ctx.scale;
                 out.descent = -f32::from(ink.y_min) * ctx.scale;
@@ -1412,6 +1488,7 @@ fn layout_large_operator(ctx: &Ctx, c: char) -> MathBox {
     out.descent = height - ascent;
     if let Stretched::Glyph(g) = stretched {
         out.italic_correction = ctx.font.italic_correction(g) * ctx.scale;
+        out.lone_glyph = Some(g);
     }
     out
 }
@@ -1567,6 +1644,9 @@ fn finish_text_run(ctx: &Ctx, mut out: MathBox) -> MathBox {
         let (asc, desc) = ctx.font.line_metrics();
         out.ascent = asc * ctx.scale;
         out.descent = desc * ctx.scale;
+    }
+    if let [Item::Glyph { id, .. }] = out.items.as_slice() {
+        out.lone_glyph = Some(*id);
     }
     out
 }

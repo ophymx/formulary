@@ -24,6 +24,15 @@ impl core::fmt::Display for FontError {
 
 impl std::error::Error for FontError {}
 
+/// A corner of a glyph for MathKern lookups.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum KernCorner {
+    TopRight,
+    TopLeft,
+    BottomRight,
+    BottomLeft,
+}
+
 /// A stretched glyph: a single (possibly variant) glyph, or a stack of
 /// assembly parts along the stretch axis.
 pub(crate) enum Stretched {
@@ -234,6 +243,54 @@ impl<'a> MathFont<'a> {
             .and_then(|gi| gi.italic_corrections)
             .and_then(|ic| ic.get(glyph))
             .map_or(0.0, |v| f32::from(v.value))
+    }
+
+    /// The font's preferred horizontal accent position for `glyph`, in
+    /// design units from the glyph origin, when the MATH table provides one.
+    pub(crate) fn top_accent_attachment(&self, glyph: GlyphId) -> Option<f32> {
+        self.face
+            .tables()
+            .math
+            .and_then(|m| m.glyph_info)
+            .and_then(|gi| gi.top_accent_attachments)
+            .and_then(|t| t.get(glyph))
+            .map(|v| f32::from(v.value))
+    }
+
+    /// The MathKern cut-in for one corner of `glyph` at `height` design units
+    /// above the baseline (negative below), or 0 when the font has none.
+    ///
+    /// The kern table is a staircase: `kern[i]` applies up to `height[i]`,
+    /// with `kern[count]` above the last step.
+    pub(crate) fn math_kern(&self, glyph: GlyphId, corner: KernCorner, height: f32) -> f32 {
+        let Some(info) = self
+            .face
+            .tables()
+            .math
+            .and_then(|m| m.glyph_info)
+            .and_then(|gi| gi.kern_infos)
+            .and_then(|k| k.get(glyph))
+        else {
+            return 0.0;
+        };
+        let Some(kern) = (match corner {
+            KernCorner::TopRight => info.top_right,
+            KernCorner::TopLeft => info.top_left,
+            KernCorner::BottomRight => info.bottom_right,
+            KernCorner::BottomLeft => info.bottom_left,
+        }) else {
+            return 0.0;
+        };
+        let count = kern.count();
+        let mut index = count;
+        for i in 0..count {
+            let step = kern.height(i).map_or(f32::MAX, |v| f32::from(v.value));
+            if height <= step {
+                index = i;
+                break;
+            }
+        }
+        kern.kern(index).map_or(0.0, |v| f32::from(v.value))
     }
 
     /// x-height in design units, with a common fallback when the OS/2 table

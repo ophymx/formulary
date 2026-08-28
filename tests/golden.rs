@@ -1391,6 +1391,59 @@ fn merror_gets_ua_styling() {
 }
 
 #[test]
+fn math_kern_tucks_scripts() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    // Italic V has a deep bottom-right cut: its subscript tucks well inside
+    // the advance (10.24px at 16px) instead of hanging off the end.
+    let laid = layout(
+        &parse("<math><msub><mi>V</mi><mn>2</mn></msub></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&laid);
+    assert!(
+        g[1].0 < 8.0,
+        "subscript should cut into the V, got x={}",
+        g[1].0
+    );
+    // And the superscript on f gets pushed right by the top-right kern
+    // (positive staircase), past the bare advance.
+    let sup = layout(
+        &parse("<math><msup><mi>f</mi><mn>2</mn></msup></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let sup_g = glyphs(&sup);
+    assert!(sup_g[1].0 > sup_g[0].0);
+}
+
+#[test]
+fn accents_use_attachment_points() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    // The stretched hat over italic x aligns the font's attachment points:
+    // the hat sits right of the naive centering position (which would be
+    // ~-3.6 for the wide variant) because the italic x's attachment point
+    // sits right of its center.
+    let laid = layout(
+        &parse(r#"<math><mover accent="true"><mi>x</mi><mo>&#x302;</mo></mover></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&laid);
+    assert_eq!(g.len(), 2);
+    let hat = g[1];
+    assert!(
+        hat.0 > 0.0 && hat.0 < 2.0,
+        "hat should sit at the attachment point, got x={}",
+        hat.0
+    );
+}
+
+#[test]
 fn underover_wrong_arity_warns() {
     assert!(!parse("<math><mover><mi>x</mi></mover></math>").unwrap().warnings.is_empty());
     assert!(!parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>")
