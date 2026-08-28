@@ -51,10 +51,7 @@ pub fn to_svg(layout: &Layout, font: &MathFont) -> String {
                 // Mirrored glyphs flip about their advance box.
                 let s = size / font.units_per_em();
                 let (tx, sx) = if mirrored {
-                    let advance = font
-                        .face()
-                        .glyph_hor_advance(id)
-                        .unwrap_or(0);
+                    let advance = font.face().glyph_hor_advance(id).unwrap_or(0);
                     (x + f32::from(advance) * s, format!("-{}", fmt(s)))
                 } else {
                     (x, fmt(s))

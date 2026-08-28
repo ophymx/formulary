@@ -191,9 +191,7 @@ pub fn apply_variant(c: char, v: MathVariant) -> char {
         '\u{03B1}'..='\u{03C9}' => plane.greek_low.map(|b| b + (c as u32 - 0x03B1)),
         _ => None,
     };
-    mapped
-        .and_then(char::from_u32)
-        .unwrap_or(c)
+    mapped.and_then(char::from_u32).unwrap_or(c)
 }
 
 /// Map `c` to its mathematical-italic counterpart (the single-char `<mi>`

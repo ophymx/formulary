@@ -82,9 +82,7 @@ pub enum Item {
 impl Item {
     fn translate(&mut self, dx: f32, dy: f32) {
         match self {
-            Item::Glyph { x, y, .. }
-            | Item::Rule { x, y, .. }
-            | Item::Background { x, y, .. } => {
+            Item::Glyph { x, y, .. } | Item::Rule { x, y, .. } | Item::Background { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
@@ -492,11 +490,7 @@ fn decorate(styles: &StyleOverrides, mut b: MathBox) -> MathBox {
 /// and carry Core's UA-stylesheet cell padding (0.4 em / 0.5 ex per side).
 /// `columnalign` sets per-column alignment (default center; last entry
 /// repeats).
-fn layout_table(
-    ctx: &Ctx,
-    rows: &[Vec<TableCell>],
-    column_align: &[ColumnAlign],
-) -> MathBox {
+fn layout_table(ctx: &Ctx, rows: &[Vec<TableCell>], column_align: &[ColumnAlign]) -> MathBox {
     let cell_ctx = ctx.styled_child(&StyleOverrides {
         display_style: Some(false),
         ..StyleOverrides::default()
@@ -556,8 +550,7 @@ fn layout_table(
     spanning.sort_by_key(|p| p.col_span);
     for p in spanning {
         let cols = &mut col_widths[p.col..p.col + p.col_span];
-        let available =
-            cols.iter().sum::<f32>() + 2.0 * hpad * (p.col_span - 1) as f32;
+        let available = cols.iter().sum::<f32>() + 2.0 * hpad * (p.col_span - 1) as f32;
         let deficit = p.content.width - available;
         if deficit > 0.0 {
             let share = deficit / p.col_span as f32;
@@ -645,8 +638,8 @@ fn layout_table(
         } else {
             col_start(p.col)
         };
-        let region_width = col_widths[p.col..=last_col].iter().sum::<f32>()
-            + 2.0 * hpad * (p.col_span - 1) as f32;
+        let region_width =
+            col_widths[p.col..=last_col].iter().sum::<f32>() + 2.0 * hpad * (p.col_span - 1) as f32;
         let slack = region_width - p.content.width;
         let dx = region_start
             + hpad
@@ -824,8 +817,7 @@ fn layout_underover(
                         && flags & opdict::HORIZONTAL != 0
                     {
                         if let Some(g) = ctx.font.glyph_index(c) {
-                            let stretched =
-                                ctx.font.stretch_horizontal(g, width / ctx.scale);
+                            let stretched = ctx.font.stretch_horizontal(g, width / ctx.scale);
                             return layout_stretched_horizontal(ctx, &stretched);
                         }
                     }
@@ -836,8 +828,7 @@ fn layout_underover(
     };
     let base_box = stretch_h(ctx, base, base_box);
     let over_box = over.map(|n| stretch_h(&over_ctx, n, over_box.expect("laid out above")));
-    let under_box =
-        under.map(|n| stretch_h(&under_ctx, n, under_box.expect("laid out above")));
+    let under_box = under.map(|n| stretch_h(&under_ctx, n, under_box.expect("laid out above")));
 
     let c = ctx.font.constants();
     // Operators carrying limits use the limit constants; plain bases the bar
@@ -1002,7 +993,10 @@ fn script_kern(
             Item::Glyph { size, .. } => size / ctx.font.units_per_em(),
             _ => ctx.scale,
         });
-        kern += ctx.font.math_kern(g, script_corner, script_height / script_scale) * script_scale;
+        kern += ctx
+            .font
+            .math_kern(g, script_corner, script_height / script_scale)
+            * script_scale;
     }
     kern
 }
@@ -1010,12 +1004,7 @@ fn script_kern(
 /// Shared vertical shifts for any number of sub/superscripts on one base
 /// (the TeX u/v computation, taken as maxima over all scripts so multiple
 /// pairs align on common baselines).
-fn script_shifts(
-    ctx: &Ctx,
-    base: &MathBox,
-    subs: &[&MathBox],
-    sups: &[&MathBox],
-) -> (f32, f32) {
+fn script_shifts(ctx: &Ctx, base: &MathBox, subs: &[&MathBox], sups: &[&MathBox]) -> (f32, f32) {
     let c = ctx.font.constants();
 
     // Superscript shift above the baseline (u in TeX terms).
@@ -1057,8 +1046,8 @@ fn script_shifts(
         let gap = (sup_shift - sup_descent) + (sub_shift - sub_ascent);
         let mut deficit = ctx.constant(c.sub_superscript_gap_min()) - gap;
         if deficit > 0.0 {
-            let headroom = ctx.constant(c.superscript_bottom_max_with_subscript())
-                - (sup_shift - sup_descent);
+            let headroom =
+                ctx.constant(c.superscript_bottom_max_with_subscript()) - (sup_shift - sup_descent);
             if headroom > 0.0 {
                 let up = deficit.min(headroom);
                 sup_shift += up;
@@ -1085,8 +1074,10 @@ fn layout_multiscripts(
             .iter()
             .map(|(sub, sup)| {
                 (
-                    sub.as_ref().map(|n| layout_node(&ctx.script_child(true), n)),
-                    sup.as_ref().map(|n| layout_node(&ctx.script_child(false), n)),
+                    sub.as_ref()
+                        .map(|n| layout_node(&ctx.script_child(true), n)),
+                    sup.as_ref()
+                        .map(|n| layout_node(&ctx.script_child(false), n)),
                 )
             })
             .collect()
@@ -1260,12 +1251,7 @@ fn layout_scripts_on(
 /// shifts, pushed further apart if the min gaps to the rule demand it; the
 /// rule is centered on the math axis. `linethickness="0"` switches to the
 /// bar-less stack layout (binomial coefficients), using the Stack constants.
-fn layout_frac(
-    ctx: &Ctx,
-    num: &Node,
-    den: &Node,
-    line_thickness: Option<Length>,
-) -> MathBox {
+fn layout_frac(ctx: &Ctx, num: &Node, den: &Node, line_thickness: Option<Length>) -> MathBox {
     let num_box = layout_node(&ctx.frac_child(false), num);
     let den_box = layout_node(&ctx.frac_child(true), den);
 
@@ -1359,10 +1345,19 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
                 .map_or(f32::from(dict_r) * em, |l| ctx.resolve(l, 0.0).max(0.0));
             let stretchy = attrs.stretchy.unwrap_or(flags & opdict::STRETCHY != 0)
                 && flags & opdict::HORIZONTAL == 0
-                && single_char(text).and_then(|c| ctx.font.glyph_index(c)).is_some();
+                && single_char(text)
+                    .and_then(|c| ctx.font.glyph_index(c))
+                    .is_some();
             if stretchy {
                 let symmetric = attrs.symmetric.unwrap_or(flags & opdict::SYMMETRIC != 0);
-                (lspace, rspace, Slot::Stretchy { node: child, symmetric })
+                (
+                    lspace,
+                    rspace,
+                    Slot::Stretchy {
+                        node: child,
+                        symmetric,
+                    },
+                )
             } else if let Node::Operator { text, attrs } = child {
                 // Direct <mo>: large-operator treatment happens here; for
                 // embellished wrappers layout_operator_base handles it.
@@ -1440,7 +1435,13 @@ fn layout_embellished_stretchy(
             let inner = ctx.styled_child(styles);
             return decorate(
                 styles,
-                layout_embellished_stretchy(&inner, &children[0], symmetric, max_ascent, max_descent),
+                layout_embellished_stretchy(
+                    &inner,
+                    &children[0],
+                    symmetric,
+                    max_ascent,
+                    max_descent,
+                ),
             );
         }
         _ => {}
@@ -1553,7 +1554,9 @@ fn emit_stretched(
             let mut advance = 0.0_f32;
             for &(g, offset) in parts {
                 advance = advance.max(ctx.font.advance(g) * ctx.scale);
-                let Some(ink) = ctx.font.ink_box(g) else { continue };
+                let Some(ink) = ctx.font.ink_box(g) else {
+                    continue;
+                };
                 // Part's ink bottom sits `offset` above the assembly bottom.
                 items.push(Item::Glyph {
                     id: g,
@@ -1734,9 +1737,7 @@ fn layout_large_operator(ctx: &Ctx, c: char) -> MathBox {
 fn is_space_like(node: &Node) -> bool {
     match node {
         Node::Space { .. } | Node::Text(_) => true,
-        Node::Row(children) | Node::Phantom(children) => {
-            children.iter().all(is_space_like)
-        }
+        Node::Row(children) | Node::Phantom(children) => children.iter().all(is_space_like),
         Node::Styled { children, .. } | Node::Padded { children, .. } => {
             children.iter().all(is_space_like)
         }

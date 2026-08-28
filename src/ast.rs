@@ -184,10 +184,7 @@ pub enum Node {
     /// `<mo>` — operator. Spacing and properties come from the MathML Core
     /// operator dictionary keyed by (character, form), overridable by the
     /// attributes captured here.
-    Operator {
-        text: String,
-        attrs: OperatorAttrs,
-    },
+    Operator { text: String, attrs: OperatorAttrs },
     /// `<mtext>` — literal text.
     Text(String),
     /// `<mrow>` — horizontal grouping.

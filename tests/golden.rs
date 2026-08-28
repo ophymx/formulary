@@ -146,7 +146,10 @@ fn mfrac_wrong_arity_falls_back_to_row() {
     let data = stix();
     let font = MathFont::new(&data, 0).unwrap();
     let laid = layout(&root, &font, &LayoutOptions { font_size: 16.0 });
-    assert!(laid.items.iter().all(|i| matches!(i, formulary::Item::Glyph { .. })));
+    assert!(laid
+        .items
+        .iter()
+        .all(|i| matches!(i, formulary::Item::Glyph { .. })));
 }
 
 #[test]
@@ -202,7 +205,10 @@ fn scripts_geometry_sane() {
     let g = glyphs(&sup);
     assert_eq!(g.len(), 2);
     let (base, script) = (g[0], g[1]);
-    assert!(script.1 < 0.0, "superscript baseline must sit above the main one");
+    assert!(
+        script.1 < 0.0,
+        "superscript baseline must sit above the main one"
+    );
     assert!(script.2 < base.2, "superscript must drop to script size");
     assert!(script.0 > base.0, "superscript attaches after the base");
     let bare = layout(&parse("<math><mi>x</mi></math>").unwrap(), &font, &opts);
@@ -216,7 +222,10 @@ fn scripts_geometry_sane() {
     );
     let g = glyphs(&sub);
     assert_eq!(g.len(), 2);
-    assert!(g[1].1 > 0.0, "subscript baseline must sit below the main one");
+    assert!(
+        g[1].1 > 0.0,
+        "subscript baseline must sit below the main one"
+    );
     assert!(sub.descent > bare.descent);
 
     // msubsup: sub and sup attach at the same base, offset only by italic
@@ -331,7 +340,10 @@ fn radical_geometry_sane() {
     let g = glyphs(&root);
     assert_eq!(g.len(), 3, "degree, radical, radicand");
     let degree = g[0];
-    assert!(degree.2 < 16.0 * 0.6, "degree renders at script-script size");
+    assert!(
+        degree.2 < 16.0 * 0.6,
+        "degree renders at script-script size"
+    );
     assert!(degree.1 < 0.0, "degree is raised");
     let sqrt_x = layout(
         &parse("<math><msqrt><mi>x</mi></msqrt></math>").unwrap(),
@@ -663,7 +675,11 @@ fn movablelimits_and_limit_placement() {
     assert!(forced.descent > inline.descent);
 
     // In display style the ∑ base itself takes its large variant.
-    let inline_sum = layout(&parse("<math><mo>&#x2211;</mo></math>").unwrap(), &font, &opts);
+    let inline_sum = layout(
+        &parse("<math><mo>&#x2211;</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
     assert!(display.ascent + display.descent > inline_sum.ascent + inline_sum.descent);
 }
 
@@ -764,8 +780,7 @@ fn embellished_operators_space_and_stretch() {
         &opts,
     );
     let text_wrapped = layout(
-        &parse("<math><mi>a</mi><msup><mtext>+</mtext><mn>1</mn></msup><mi>b</mi></math>")
-            .unwrap(),
+        &parse("<math><mi>a</mi><msup><mtext>+</mtext><mn>1</mn></msup><mi>b</mi></math>").unwrap(),
         &font,
         &opts,
     );
@@ -790,7 +805,10 @@ fn embellished_operators_space_and_stretch() {
     // The open and close fences are the same stretched glyph at mirrored
     // heights; the close one sits inside the msup, before its superscript.
     let close = g[g.len() - 2];
-    assert!((open.1 - close.1).abs() < 1e-3, "fences share vertical placement");
+    assert!(
+        (open.1 - close.1).abs() < 1e-3,
+        "fences share vertical placement"
+    );
 }
 
 #[test]
@@ -846,10 +864,12 @@ fn mtable_geometry_sane() {
         &font,
         &opts,
     );
-    assert!(two_by_two.ascent + two_by_two.descent
-        > 1.8 * (single.ascent + single.descent));
+    assert!(two_by_two.ascent + two_by_two.descent > 1.8 * (single.ascent + single.descent));
     assert!(two_by_two.descent > 0.0);
-    assert!(two_by_two.ascent > two_by_two.descent, "axis sits above baseline");
+    assert!(
+        two_by_two.ascent > two_by_two.descent,
+        "axis sits above baseline"
+    );
 
     // Cells center within their column: 'a' (narrow, over wide '100') is
     // indented; the first row's glyph starts right of the second row's.
@@ -870,7 +890,11 @@ fn mtable_geometry_sane() {
         &font,
         &opts,
     );
-    let paren_small = layout(&parse("<math><mo>(</mo><mi>a</mi><mo>)</mo></math>").unwrap(), &font, &opts);
+    let paren_small = layout(
+        &parse("<math><mo>(</mo><mi>a</mi><mo>)</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
     assert!(fenced.ascent + fenced.descent > paren_small.ascent + paren_small.descent);
 
     // Ragged rows are tolerated.
@@ -890,7 +914,10 @@ fn mtable_geometry_sane() {
         &opts,
     );
     let sizes: Vec<f32> = glyphs(&in_table).iter().map(|g| g.2).collect();
-    assert!(sizes.iter().all(|&s| s < 16.0), "table cell fraction is text-style");
+    assert!(
+        sizes.iter().all(|&s| s < 16.0),
+        "table cell fraction is text-style"
+    );
 }
 
 #[test]
@@ -961,8 +988,10 @@ fn table_spans_shape_the_grid() {
         &opts,
     );
     let plain = layout(
-        &parse("<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>")
-            .unwrap(),
+        &parse(
+            "<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>",
+        )
+        .unwrap(),
         &font,
         &opts,
     );
@@ -1200,7 +1229,10 @@ fn mathvariant_maps_tokens() {
     assert!(bold != plain && bold != italic);
     let bb_r = gid(r#"<math><mi mathvariant="double-struck">R</mi></math>"#);
     let literal_bb_r = gid("<math><mi>&#x211D;</mi></math>");
-    assert_eq!(bb_r, literal_bb_r, "R maps through the Letterlike hole to ℝ");
+    assert_eq!(
+        bb_r, literal_bb_r,
+        "R maps through the Letterlike hole to ℝ"
+    );
     // Digits exist in bold but not italic: italic leaves them alone.
     assert_eq!(
         gid(r#"<math><mn mathvariant="italic">5</mn></math>"#),
@@ -1617,10 +1649,7 @@ fn rtl_radical_mirrors() {
     }
     assert_eq!(bar_x, Some(0.0));
     let surd_x = surd.expect("mirrored surd glyph");
-    let content_x = glyphs(&laid)
-        .iter()
-        .map(|g| g.0)
-        .fold(f32::MAX, f32::min);
+    let content_x = glyphs(&laid).iter().map(|g| g.0).fold(f32::MAX, f32::min);
     assert!(surd_x >= content_x, "surd on the right side");
 
     // LTR radicals are unaffected (no mirrored glyphs).
@@ -1641,8 +1670,10 @@ fn rtl_table_reverses_columns() {
     let font = MathFont::new(&data, 0).unwrap();
     let opts = LayoutOptions { font_size: 16.0 };
     let ltr = layout(
-        &parse("<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>")
-            .unwrap(),
+        &parse(
+            "<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>",
+        )
+        .unwrap(),
         &font,
         &opts,
     );
@@ -1659,20 +1690,30 @@ fn rtl_table_reverses_columns() {
 
 #[test]
 fn underover_wrong_arity_warns() {
-    assert!(!parse("<math><mover><mi>x</mi></mover></math>").unwrap().warnings.is_empty());
-    assert!(!parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>")
+    assert!(!parse("<math><mover><mi>x</mi></mover></math>")
         .unwrap()
         .warnings
         .is_empty());
+    assert!(
+        !parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>")
+            .unwrap()
+            .warnings
+            .is_empty()
+    );
 }
 
 #[test]
 fn scripts_wrong_arity_warns() {
-    assert!(!parse("<math><msup><mi>x</mi></msup></math>").unwrap().warnings.is_empty());
-    assert!(!parse("<math><msubsup><mi>x</mi><mn>1</mn></msubsup></math>")
+    assert!(!parse("<math><msup><mi>x</mi></msup></math>")
         .unwrap()
         .warnings
         .is_empty());
+    assert!(
+        !parse("<math><msubsup><mi>x</mi><mn>1</mn></msubsup></math>")
+            .unwrap()
+            .warnings
+            .is_empty()
+    );
 }
 
 #[test]

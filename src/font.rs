@@ -143,9 +143,7 @@ impl<'a> MathFont<'a> {
         }
         construction
             .assembly
-            .and_then(|asm| {
-                self.assemble(&asm, f32::from(variants.min_connector_overlap), target)
-            })
+            .and_then(|asm| self.assemble(&asm, f32::from(variants.min_connector_overlap), target))
             .unwrap_or(Stretched::Glyph(best))
     }
 
@@ -161,7 +159,11 @@ impl<'a> MathFont<'a> {
         for repeats in 1..=32u32 {
             let mut seq: Vec<ttf_parser::math::GlyphPart> = Vec::new();
             for part in asm.parts {
-                let n = if part.part_flags.extender() { repeats } else { 1 };
+                let n = if part.part_flags.extender() {
+                    repeats
+                } else {
+                    1
+                };
                 for _ in 0..n {
                     seq.push(part);
                 }
@@ -179,9 +181,7 @@ impl<'a> MathFont<'a> {
             let mut overlap = (sum - target) / joints;
             let max_overlap = seq
                 .windows(2)
-                .map(|w| {
-                    f32::from(w[0].end_connector_length.min(w[1].start_connector_length))
-                })
+                .map(|w| f32::from(w[0].end_connector_length.min(w[1].start_connector_length)))
                 .fold(f32::INFINITY, f32::min);
             overlap = overlap.clamp(min_overlap, max_overlap.max(min_overlap));
 
@@ -207,9 +207,7 @@ impl<'a> MathFont<'a> {
     pub(crate) fn script_alternate(&self, glyph: GlyphId, level: u16) -> Option<GlyphId> {
         debug_assert!(level >= 1);
         let gsub = self.face.tables().gsub?;
-        let feature = gsub
-            .features
-            .find(ttf_parser::Tag::from_bytes(b"ssty"))?;
+        let feature = gsub.features.find(ttf_parser::Tag::from_bytes(b"ssty"))?;
         for li in feature.lookup_indices {
             let Some(lookup) = gsub.lookups.get(li) else {
                 continue;
@@ -304,9 +302,6 @@ impl<'a> MathFont<'a> {
 
     /// Font-wide ascent/descent in design units (descent returned positive).
     pub(crate) fn line_metrics(&self) -> (f32, f32) {
-        (
-            self.face.ascender() as f32,
-            -(self.face.descender() as f32),
-        )
+        (self.face.ascender() as f32, -(self.face.descender() as f32))
     }
 }

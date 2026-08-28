@@ -133,9 +133,7 @@ fn parse_element(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
             let styled = match variant_attr(node) {
                 Some(v) => apply(&text, v),
                 // Single-char <mi> defaults to math italic.
-                None if text.chars().count() == 1 => {
-                    text.chars().map(to_math_italic).collect()
-                }
+                None if text.chars().count() == 1 => text.chars().map(to_math_italic).collect(),
                 None => text,
             };
             Node::Identifier(styled)
@@ -282,10 +280,7 @@ fn parse_element(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
                         // becomes a one-cell row.
                         warnings.push(Warning::InvalidStructure {
                             element: "mtable".to_string(),
-                            detail: format!(
-                                "child <{}> is not <mtr>",
-                                row.tag_name().name()
-                            ),
+                            detail: format!("child <{}> is not <mtr>", row.tag_name().name()),
                         });
                         return vec![TableCell::new(parse_node(row, warnings))];
                     }
@@ -388,11 +383,7 @@ fn parse_element(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
 
 /// `mrow` fallback for a fixed-arity element whose children are already
 /// parsed.
-fn invalid_parsed(
-    element: &str,
-    children: Vec<Node>,
-    warnings: &mut Vec<Warning>,
-) -> Node {
+fn invalid_parsed(element: &str, children: Vec<Node>, warnings: &mut Vec<Warning>) -> Node {
     warnings.push(Warning::InvalidStructure {
         element: element.to_string(),
         detail: format!("wrong number of children ({})", children.len()),
@@ -406,14 +397,7 @@ fn parse_multiscripts(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Nod
         Some(b) if !matches!(b.tag_name().name(), "none" | "mprescripts") => {
             Box::new(parse_node(b, warnings))
         }
-        _ => {
-            return invalid(
-                node,
-                "mmultiscripts",
-                "missing base".to_string(),
-                warnings,
-            )
-        }
+        _ => return invalid(node, "mmultiscripts", "missing base".to_string(), warnings),
     };
     // Flat script slots, split at <mprescripts/>; <none/> is an empty slot.
     let mut sections: [Vec<Option<Node>>; 2] = [Vec::new(), Vec::new()];
@@ -468,7 +452,8 @@ fn length_attr(node: roxmltree::Node, name: &str) -> Option<Length> {
 
 /// The `mathvariant` attribute, when present and valid.
 fn variant_attr(node: roxmltree::Node) -> Option<MathVariant> {
-    node.attribute("mathvariant").and_then(MathVariant::from_attr)
+    node.attribute("mathvariant")
+        .and_then(MathVariant::from_attr)
 }
 
 fn apply(text: &str, v: MathVariant) -> String {
@@ -493,7 +478,11 @@ fn color_attr(node: roxmltree::Node, name: &str) -> Option<Color> {
 fn parse_color(s: &str) -> Option<Color> {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix('#') {
-        let d = |i: usize| hex.as_bytes().get(i).and_then(|b| (*b as char).to_digit(16));
+        let d = |i: usize| {
+            hex.as_bytes()
+                .get(i)
+                .and_then(|b| (*b as char).to_digit(16))
+        };
         return match hex.len() {
             3 | 4 => {
                 let mut c = [0u8; 4];
@@ -503,7 +492,12 @@ fn parse_color(s: &str) -> Option<Color> {
                 if hex.len() == 3 {
                     c[3] = 255;
                 }
-                Some(Color { r: c[0], g: c[1], b: c[2], a: c[3] })
+                Some(Color {
+                    r: c[0],
+                    g: c[1],
+                    b: c[2],
+                    a: c[3],
+                })
             }
             6 | 8 => {
                 let mut c = [0u8; 4];
@@ -513,7 +507,12 @@ fn parse_color(s: &str) -> Option<Color> {
                 if hex.len() == 6 {
                     c[3] = 255;
                 }
-                Some(Color { r: c[0], g: c[1], b: c[2], a: c[3] })
+                Some(Color {
+                    r: c[0],
+                    g: c[1],
+                    b: c[2],
+                    a: c[3],
+                })
             }
             _ => None,
         };
@@ -547,7 +546,14 @@ fn parse_color(s: &str) -> Option<Color> {
         "darkred" => (0x8B, 0x00, 0x00),
         "darkgreen" => (0x00, 0x64, 0x00),
         "darkblue" => (0x00, 0x00, 0x8B),
-        "transparent" => return Some(Color { r: 0, g: 0, b: 0, a: 0 }),
+        "transparent" => {
+            return Some(Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            })
+        }
         _ => return None,
     };
     Some(Color::rgb(named.0, named.1, named.2))

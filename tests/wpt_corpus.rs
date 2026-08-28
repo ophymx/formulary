@@ -152,9 +152,10 @@ fn check_invariants(markup: &str, font: &MathFont) -> Result<(), String> {
                 }
             }
             Item::Rule { x, y, w, h, .. }
-                if (!(finite(x) && finite(y) && finite(w) && finite(h)) || w < 0.0 || h < 0.0) => {
-                    return Err(format!("bad rule item: x={x} y={y} w={w} h={h}"));
-                }
+                if (!(finite(x) && finite(y) && finite(w) && finite(h)) || w < 0.0 || h < 0.0) =>
+            {
+                return Err(format!("bad rule item: x={x} y={y} w={w} h={h}"));
+            }
             _ => {}
         }
     }
@@ -221,9 +222,9 @@ fn wpt_corpus() {
                             for warning in w {
                                 let element = match warning {
                                     formulary::Warning::UnknownElement { element } => element,
-                                    formulary::Warning::InvalidStructure {
-                                        element, ..
-                                    } => format!("{element} (structure)"),
+                                    formulary::Warning::InvalidStructure { element, .. } => {
+                                        format!("{element} (structure)")
+                                    }
                                 };
                                 *warned.entry(element).or_default() += 1;
                             }
@@ -243,8 +244,11 @@ fn wpt_corpus() {
     eprintln!("== WPT mathml corpus ==");
     eprintln!("files: {}, fragments: {total}", files.len());
     eprintln!("clean: {clean}, recovered with warnings: {recovered}");
-    eprintln!("rendered: {} ({:.1}%)", clean + recovered,
-        100.0 * (clean + recovered) as f64 / total as f64);
+    eprintln!(
+        "rendered: {} ({:.1}%)",
+        clean + recovered,
+        100.0 * (clean + recovered) as f64 / total as f64
+    );
     eprintln!("xml/html-isms rejected: {xml_errors}");
     let mut by_count: Vec<_> = warned.into_iter().collect();
     by_count.sort_by_key(|(_, n)| std::cmp::Reverse(*n));

@@ -26,13 +26,10 @@ pub const FORM_POSTFIX: u8 = 2;
 /// `(lspace, rspace, flags)` for a character in a given form.
 pub fn lookup(c: char, form: u8) -> Option<(u8, u8, u8)> {
     let key = (c as u32) << 2 | u32::from(form);
-    ENTRIES
-        .binary_search_by_key(&key, |e| e.0)
-        .ok()
-        .map(|i| {
-            let (_, l, r, f) = ENTRIES[i];
-            (l, r, f)
-        })
+    ENTRIES.binary_search_by_key(&key, |e| e.0).ok().map(|i| {
+        let (_, l, r, f) = ENTRIES[i];
+        (l, r, f)
+    })
 }
 
 #[rustfmt::skip]
