@@ -22,6 +22,8 @@ pub mod ast;
 mod font;
 mod layout;
 mod mathvariant;
+#[allow(dead_code)] // stretchy/largeop flag consumers arrive with the rest of Tier 1
+mod opdict;
 mod parse;
 #[cfg(feature = "svg")]
 pub mod svg;

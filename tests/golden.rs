@@ -446,6 +446,69 @@ fn mpadded_overrides_box() {
 }
 
 #[test]
+fn operator_spacing_from_dictionary() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 18.0 }; // 1/18em == 1 unit
+
+    // Infix '+' carries 4/18 em on each side.
+    let sum = layout(
+        &parse("<math><mi>a</mi><mo>+</mo><mi>b</mi></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let bare = layout(
+        &parse("<math><mi>a</mi><mtext>+</mtext><mi>b</mi></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((sum.width - bare.width - 8.0).abs() < 1e-3);
+
+    // Leading '−' is prefix: no space on either side.
+    let neg = layout(
+        &parse("<math><mo>&#x2212;</mo><mi>b</mi></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let neg_text = layout(
+        &parse("<math><mtext>&#x2212;</mtext><mi>b</mi></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((neg.width - neg_text.width).abs() < 1e-3);
+
+    // Explicit form attribute overrides position inference.
+    let forced_infix = layout(
+        &parse(r#"<math><mo form="infix">&#x2212;</mo><mi>b</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(forced_infix.width > neg.width);
+
+    // lspace/rspace attributes override the dictionary.
+    let custom = layout(
+        &parse(r#"<math><mi>a</mi><mo lspace="0" rspace="0">+</mo><mi>b</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((custom.width - bare.width).abs() < 1e-3);
+
+    // Space-like siblings don't affect form inference: '−' before an mspace
+    // and an identifier is still prefix.
+    let with_space = layout(
+        &parse(r#"<math><mtext>pad</mtext><mo>&#x2212;</mo><mi>b</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let with_space_text = layout(
+        &parse(r#"<math><mtext>pad</mtext><mtext>&#x2212;</mtext><mi>b</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((with_space.width - with_space_text.width).abs() < 1e-3);
+}
+
+#[test]
 fn scripts_wrong_arity_errors() {
     assert!(parse("<math><msup><mi>x</mi></msup></math>").is_err());
     assert!(parse("<math><msubsup><mi>x</mi><mn>1</mn></msubsup></math>").is_err());

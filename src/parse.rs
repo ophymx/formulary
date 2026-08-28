@@ -1,6 +1,6 @@
 //! Presentation MathML → typed element tree.
 
-use crate::ast::{DisplayMode, Length, MathRoot, Node, ScriptLevel};
+use crate::ast::{DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs, ScriptLevel};
 
 /// Errors produced while turning MathML markup into an element tree.
 #[derive(Debug)]
@@ -79,7 +79,23 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
     match name {
         "mi" => Ok(Node::Identifier(text_content(node))),
         "mn" => Ok(Node::Number(text_content(node))),
-        "mo" => Ok(Node::Operator(text_content(node))),
+        "mo" => Ok(Node::Operator {
+            text: text_content(node),
+            attrs: OperatorAttrs {
+                form: match node.attribute("form") {
+                    Some("infix") => Some(Form::Infix),
+                    Some("prefix") => Some(Form::Prefix),
+                    Some("postfix") => Some(Form::Postfix),
+                    _ => None,
+                },
+                lspace: length_attr(node, "lspace"),
+                rspace: length_attr(node, "rspace"),
+                stretchy: bool_attr(node, "stretchy"),
+                symmetric: bool_attr(node, "symmetric"),
+                largeop: bool_attr(node, "largeop"),
+                movablelimits: bool_attr(node, "movablelimits"),
+            },
+        }),
         "mtext" => Ok(Node::Text(text_content(node))),
         "mrow" => Ok(Node::Row(parse_children(node)?)),
         "mfrac" => {
@@ -169,6 +185,14 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
 /// bad `width` shouldn't kill the whole formula.
 fn length_attr(node: roxmltree::Node, name: &str) -> Option<Length> {
     node.attribute(name).and_then(parse_length)
+}
+
+fn bool_attr(node: roxmltree::Node, name: &str) -> Option<bool> {
+    match node.attribute(name) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
 }
 
 fn parse_length(s: &str) -> Option<Length> {

@@ -11,9 +11,10 @@
 //! Layout is cheap and resolution-independent: re-run it when the target font
 //! size changes rather than scaling a previous result.
 
-use crate::ast::{DisplayMode, Length, MathRoot, Node, ScriptLevel};
+use crate::ast::{DisplayMode, Form, Length, MathRoot, Node, ScriptLevel};
 use crate::font::{GlyphId, MathFont};
 use crate::mathvariant::to_math_italic;
+use crate::opdict;
 
 /// Caller-supplied layout parameters.
 #[derive(Debug, Clone)]
@@ -253,9 +254,10 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
                 _ => layout_text_run(ctx, text),
             }
         }
-        Node::Number(text) | Node::Operator(text) | Node::Text(text) => {
-            layout_text_run(ctx, text)
-        }
+        // An <mo> reached outside row context (e.g. as a script base) gets no
+        // form-dependent spacing; the surrounding row handles spacing.
+        Node::Operator { text, .. } => layout_text_run(ctx, text),
+        Node::Number(text) | Node::Text(text) => layout_text_run(ctx, text),
         Node::Row(children) => layout_row(ctx, children),
         Node::Frac { num, den } => layout_frac(ctx, num, den),
         Node::Scripts { base, sub, sup } => {
@@ -538,20 +540,105 @@ fn layout_frac(ctx: &Ctx, num: &Node, den: &Node) -> MathBox {
     out
 }
 
-/// Horizontal concatenation on a shared baseline.
+/// Horizontal concatenation on a shared baseline, with operator-dictionary
+/// spacing around `<mo>` children.
 fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
+    // Positions among non-space-like siblings decide each operator's form.
+    let significant: Vec<usize> = children
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !is_space_like(c))
+        .map(|(i, _)| i)
+        .collect();
+
     let mut out = MathBox::empty();
-    for child in children {
+    for (i, child) in children.iter().enumerate() {
+        let (lspace, rspace) = match child {
+            Node::Operator { text, attrs } => {
+                let form = attrs.form.unwrap_or_else(|| infer_form(i, &significant));
+                operator_spacing(ctx, text, form, attrs)
+            }
+            _ => (0.0, 0.0),
+        };
         let mut b = layout_node(ctx, child);
         for item in &mut b.items {
-            item.translate(out.width, 0.0);
+            item.translate(out.width + lspace, 0.0);
         }
         out.items.append(&mut b.items);
-        out.width += b.width;
+        out.width += lspace + b.width + rspace;
         out.ascent = out.ascent.max(b.ascent);
         out.descent = out.descent.max(b.descent);
     }
     out
+}
+
+/// Elements that don't count as operands when inferring operator forms
+/// (MathML Core's space-like definition).
+fn is_space_like(node: &Node) -> bool {
+    match node {
+        Node::Space { .. } | Node::Text(_) => true,
+        Node::Row(children) | Node::Phantom(children) => {
+            children.iter().all(is_space_like)
+        }
+        Node::Styled { children, .. } | Node::Padded { children, .. } => {
+            children.iter().all(is_space_like)
+        }
+        _ => false,
+    }
+}
+
+/// Form by position: first of several operands → prefix, last → postfix,
+/// otherwise (including a lone child) infix.
+fn infer_form(index: usize, significant: &[usize]) -> Form {
+    if significant.len() > 1 {
+        if significant.first() == Some(&index) {
+            return Form::Prefix;
+        }
+        if significant.last() == Some(&index) {
+            return Form::Postfix;
+        }
+    }
+    Form::Infix
+}
+
+/// Resolved lspace/rspace for an operator, in layout units.
+fn operator_spacing(ctx: &Ctx, text: &str, form: Form, attrs: &crate::ast::OperatorAttrs) -> (f32, f32) {
+    let (dict_l, dict_r, _flags) = dictionary_entry(text, form);
+    let em = ctx.size / 18.0;
+    let l = attrs
+        .lspace
+        .map_or(f32::from(dict_l) * em, |len| ctx.resolve(len, 0.0).max(0.0));
+    let r = attrs
+        .rspace
+        .map_or(f32::from(dict_r) * em, |len| ctx.resolve(len, 0.0).max(0.0));
+    (l, r)
+}
+
+/// Dictionary lookup with the spec's fallback chain (requested form, then
+/// infix → postfix → prefix), ending at the default entry (5/18 em each
+/// side, no properties). Multi-character operators aren't in the dictionary
+/// and get the default.
+fn dictionary_entry(text: &str, form: Form) -> (u8, u8, u8) {
+    let mut chars = text.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return (5, 5, 0);
+    };
+    let requested = match form {
+        Form::Infix => opdict::FORM_INFIX,
+        Form::Prefix => opdict::FORM_PREFIX,
+        Form::Postfix => opdict::FORM_POSTFIX,
+    };
+    for f in [
+        requested,
+        opdict::FORM_INFIX,
+        opdict::FORM_POSTFIX,
+        opdict::FORM_PREFIX,
+    ] {
+        if let Some(entry) = opdict::lookup(c, f) {
+            return entry;
+        }
+    }
+    (5, 5, 0)
 }
 
 /// Per-character glyph mapping and advance placement.

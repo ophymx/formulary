@@ -32,6 +32,28 @@ pub enum Length {
     Percent(f32),
 }
 
+/// An operator's syntactic position, which selects its operator-dictionary
+/// entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    Infix,
+    Prefix,
+    Postfix,
+}
+
+/// Attributes of `<mo>` that override the operator dictionary. `None` means
+/// "use the dictionary value".
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OperatorAttrs {
+    pub form: Option<Form>,
+    pub lspace: Option<Length>,
+    pub rspace: Option<Length>,
+    pub stretchy: Option<bool>,
+    pub symmetric: Option<bool>,
+    pub largeop: Option<bool>,
+    pub movablelimits: Option<bool>,
+}
+
 /// A `scriptlevel` attribute value: absolute, or relative with an explicit
 /// `+`/`-` sign.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,9 +78,13 @@ pub enum Node {
     Identifier(String),
     /// `<mn>` — numeric literal.
     Number(String),
-    /// `<mo>` — operator. Spacing/stretching (operator dictionary) is Tier 1;
-    /// for now it lays out like text.
-    Operator(String),
+    /// `<mo>` — operator. Spacing and properties come from the MathML Core
+    /// operator dictionary keyed by (character, form), overridable by the
+    /// attributes captured here.
+    Operator {
+        text: String,
+        attrs: OperatorAttrs,
+    },
     /// `<mtext>` — literal text.
     Text(String),
     /// `<mrow>` — horizontal grouping.
