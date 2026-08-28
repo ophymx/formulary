@@ -1,6 +1,6 @@
 //! Presentation MathML → typed element tree.
 
-use crate::ast::{DisplayMode, MathRoot, Node};
+use crate::ast::{DisplayMode, Length, MathRoot, Node, ScriptLevel};
 
 /// Errors produced while turning MathML markup into an element tree.
 #[derive(Debug)]
@@ -122,6 +122,29 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
             Ok(Node::Scripts { base, sub, sup })
         }
         "msqrt" => Ok(Node::Sqrt(parse_children(node)?)),
+        "mspace" => Ok(Node::Space {
+            width: length_attr(node, "width"),
+            height: length_attr(node, "height"),
+            depth: length_attr(node, "depth"),
+        }),
+        "mstyle" => Ok(Node::Styled {
+            display_style: match node.attribute("displaystyle") {
+                Some("true") => Some(true),
+                Some("false") => Some(false),
+                _ => None,
+            },
+            script_level: node.attribute("scriptlevel").and_then(parse_script_level),
+            children: parse_children(node)?,
+        }),
+        "mphantom" => Ok(Node::Phantom(parse_children(node)?)),
+        "mpadded" => Ok(Node::Padded {
+            width: length_attr(node, "width"),
+            height: length_attr(node, "height"),
+            depth: length_attr(node, "depth"),
+            lspace: length_attr(node, "lspace"),
+            voffset: length_attr(node, "voffset"),
+            children: parse_children(node)?,
+        }),
         "mroot" => {
             let mut children = parse_children(node)?;
             if children.len() != 2 {
@@ -138,6 +161,41 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
         other => Err(ParseError::Unsupported {
             element: other.to_string(),
         }),
+    }
+}
+
+/// A length-valued attribute. Invalid values behave like an absent attribute,
+/// per MathML's error-recovery convention — markup in the wild is messy and a
+/// bad `width` shouldn't kill the whole formula.
+fn length_attr(node: roxmltree::Node, name: &str) -> Option<Length> {
+    node.attribute(name).and_then(parse_length)
+}
+
+fn parse_length(s: &str) -> Option<Length> {
+    let s = s.trim();
+    let split = s
+        .find(|c: char| c != '+' && c != '-' && c != '.' && !c.is_ascii_digit())
+        .unwrap_or(s.len());
+    let (num, unit) = s.split_at(split);
+    let value: f32 = num.parse().ok()?;
+    match unit.trim() {
+        "em" => Some(Length::Em(value)),
+        "ex" => Some(Length::Ex(value)),
+        "px" => Some(Length::Px(value)),
+        "pt" => Some(Length::Pt(value)),
+        "%" => Some(Length::Percent(value)),
+        // Unitless nonzero numbers are invalid in MathML Core.
+        "" if value == 0.0 => Some(Length::Px(0.0)),
+        _ => None,
+    }
+}
+
+fn parse_script_level(s: &str) -> Option<ScriptLevel> {
+    let s = s.trim();
+    if s.starts_with('+') || s.starts_with('-') {
+        s.parse().ok().map(ScriptLevel::Add)
+    } else {
+        s.parse().ok().map(ScriptLevel::Set)
     }
 }
 

@@ -11,7 +11,7 @@
 //! Layout is cheap and resolution-independent: re-run it when the target font
 //! size changes rather than scaling a previous result.
 
-use crate::ast::{DisplayMode, MathRoot, Node};
+use crate::ast::{DisplayMode, Length, MathRoot, Node, ScriptLevel};
 use crate::font::{GlyphId, MathFont};
 use crate::mathvariant::to_math_italic;
 
@@ -186,10 +186,40 @@ impl<'a, 'f> Ctx<'a, 'f> {
         )
     }
 
+    /// Child context for `<mstyle>` overrides.
+    fn styled_child(&self, display: Option<bool>, level: Option<ScriptLevel>) -> Self {
+        let script_level = match level {
+            None => self.script_level,
+            Some(ScriptLevel::Set(n)) => n,
+            Some(ScriptLevel::Add(d)) => {
+                (i16::from(self.script_level) + i16::from(d)).clamp(0, 255) as u8
+            }
+        };
+        Ctx::derive(
+            self.font,
+            self.base_size,
+            script_level,
+            display.unwrap_or(self.display_style),
+            self.cramped,
+        )
+    }
+
     /// A MATH constant, converted from design units to output units at this
     /// context's scale.
     fn constant(&self, v: ttf_parser::math::MathValue) -> f32 {
         v.value as f32 * self.scale
+    }
+
+    /// Resolve a MathML length to layout units. Percentages resolve against
+    /// `percent_ref` (the natural dimension for `mpadded`, zero elsewhere).
+    fn resolve(&self, len: Length, percent_ref: f32) -> f32 {
+        match len {
+            Length::Em(v) => v * self.size,
+            Length::Ex(v) => v * self.font.x_height() * self.scale,
+            Length::Px(v) => v,
+            Length::Pt(v) => v * 96.0 / 72.0,
+            Length::Percent(v) => v / 100.0 * percent_ref,
+        }
     }
 }
 
@@ -239,6 +269,55 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
             let content = layout_node(&ctx.cramped_child(), base);
             let degree = layout_node(&ctx.root_degree_child(), index);
             layout_radical(ctx, content, Some(degree))
+        }
+        Node::Space {
+            width,
+            height,
+            depth,
+        } => MathBox {
+            width: width.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0),
+            ascent: height.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0),
+            descent: depth.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0),
+            items: Vec::new(),
+        },
+        Node::Styled {
+            display_style,
+            script_level,
+            children,
+        } => layout_row(&ctx.styled_child(*display_style, *script_level), children),
+        Node::Phantom(children) => {
+            let mut b = layout_row(ctx, children);
+            b.items.clear();
+            b
+        }
+        Node::Padded {
+            width,
+            height,
+            depth,
+            lspace,
+            voffset,
+            children,
+        } => {
+            let natural = layout_row(ctx, children);
+            let dx = lspace.map_or(0.0, |l| ctx.resolve(l, 0.0)).max(0.0);
+            // Positive voffset moves the content up.
+            let dy = -voffset.map_or(0.0, |l| ctx.resolve(l, 0.0));
+            let mut out = MathBox {
+                width: width
+                    .map_or(natural.width, |l| ctx.resolve(l, natural.width))
+                    .max(0.0),
+                ascent: height
+                    .map_or(natural.ascent, |l| ctx.resolve(l, natural.ascent))
+                    .max(0.0),
+                descent: depth
+                    .map_or(natural.descent, |l| ctx.resolve(l, natural.descent))
+                    .max(0.0),
+                items: natural.items,
+            };
+            for item in &mut out.items {
+                item.translate(dx, dy);
+            }
+            out
         }
     }
 }

@@ -322,6 +322,130 @@ fn radical_geometry_sane() {
 }
 
 #[test]
+fn golden_spacing_and_style() {
+    check_golden(
+        "spacing_and_style",
+        r#"<math><mi>a</mi><mspace width="1em"/><mstyle displaystyle="true"><mfrac><mn>1</mn><mn>2</mn></mfrac></mstyle></math>"#,
+    );
+}
+
+#[test]
+fn golden_quadratic_formula() {
+    check_golden(
+        "quadratic_formula",
+        r#"<math display="block"><mi>x</mi><mo>=</mo><mfrac><mrow><mo>&#x2212;</mo><mi>b</mi><mo>&#xB1;</mo><msqrt><msup><mi>b</mi><mn>2</mn></msup><mo>&#x2212;</mo><mn>4</mn><mi>a</mi><mi>c</mi></msqrt></mrow><mrow><mn>2</mn><mi>a</mi></mrow></mfrac></math>"#,
+    );
+}
+
+#[test]
+fn mspace_occupies_space() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let spaced = layout(
+        &parse(r#"<math><mi>a</mi><mspace width="1em"/><mi>b</mi></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let tight = layout(
+        &parse("<math><mi>a</mi><mi>b</mi></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((spaced.width - tight.width - 16.0).abs() < 1e-3);
+
+    let tall = layout(
+        &parse(r#"<math><mspace width="4px" height="20px" depth="8px"/></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!((tall.width, tall.ascent, tall.descent), (4.0, 20.0, 8.0));
+    assert!(tall.items.is_empty());
+}
+
+#[test]
+fn mstyle_switches_style() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    // displaystyle=true inside inline math must match block-math layout.
+    let styled = layout(
+        &parse(r#"<math><mstyle displaystyle="true"><mfrac><mn>1</mn><mn>2</mn></mfrac></mstyle></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let block = layout(
+        &parse(r#"<math display="block"><mfrac><mn>1</mn><mn>2</mn></mfrac></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(styled, block);
+
+    // scriptlevel="+1" shrinks glyphs; an absolute value works too.
+    let bumped = layout(
+        &parse(r#"<math><mstyle scriptlevel="+1"><mi>x</mi></mstyle></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(glyphs(&bumped)[0].2 < 16.0);
+    let set = layout(
+        &parse(r#"<math><mstyle scriptlevel="2"><mi>x</mi></mstyle></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(glyphs(&set)[0].2 < glyphs(&bumped)[0].2);
+}
+
+#[test]
+fn mphantom_spaces_without_ink() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let phantom = layout(
+        &parse("<math><mphantom><mfrac><mn>1</mn><mn>2</mn></mfrac></mphantom></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let visible = layout(
+        &parse("<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(phantom.items.is_empty());
+    assert_eq!(
+        (phantom.width, phantom.ascent, phantom.descent),
+        (visible.width, visible.ascent, visible.descent)
+    );
+}
+
+#[test]
+fn mpadded_overrides_box() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let natural = layout(&parse("<math><mi>x</mi></math>").unwrap(), &font, &opts);
+    let padded = layout(
+        &parse(r#"<math><mpadded width="200%" height="30px" voffset="5px"><mi>x</mi></mpadded></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((padded.width - 2.0 * natural.width).abs() < 1e-3);
+    assert_eq!(padded.ascent, 30.0);
+    // voffset moves the ink up without changing the reported box.
+    assert!((glyphs(&padded)[0].1 - (-5.0)).abs() < 1e-6);
+
+    // Invalid length values fall back to the natural dimension.
+    let bad = layout(
+        &parse(r#"<math><mpadded width="banana"><mi>x</mi></mpadded></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(bad.width, natural.width);
+}
+
+#[test]
 fn scripts_wrong_arity_errors() {
     assert!(parse("<math><msup><mi>x</mi></msup></math>").is_err());
     assert!(parse("<math><msubsup><mi>x</mi><mn>1</mn></msubsup></math>").is_err());

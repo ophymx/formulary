@@ -103,6 +103,15 @@ impl<'a> MathFont<'a> {
         best
     }
 
+    /// x-height in design units, with a common fallback when the OS/2 table
+    /// doesn't provide one.
+    pub(crate) fn x_height(&self) -> f32 {
+        self.face
+            .x_height()
+            .map(f32::from)
+            .unwrap_or(self.units_per_em * 0.5)
+    }
+
     /// Font-wide ascent/descent in design units (descent returned positive).
     pub(crate) fn line_metrics(&self) -> (f32, f32) {
         (
