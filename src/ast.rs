@@ -68,6 +68,22 @@ pub struct MathRoot {
     pub display: DisplayMode,
     /// The children of `<math>`, treated as an anonymous `mrow`.
     pub children: Vec<Node>,
+    /// Recoveries applied during parsing (MathML Core's error handling lays
+    /// out unknown or structurally invalid elements as `mrow`). Empty means
+    /// the markup was fully understood; non-empty markup still renders.
+    pub warnings: Vec<Warning>,
+}
+
+/// A recovered-from problem in the source markup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Warning {
+    /// An element this crate doesn't know; rendered as an `mrow` of its
+    /// children (or as text, if it only contains text).
+    UnknownElement { element: String },
+    /// A known element whose children don't form the required structure
+    /// (wrong arity, stray table children, odd script counts); rendered via
+    /// the spec's `mrow` fallback.
+    InvalidStructure { element: String, detail: String },
 }
 
 /// One presentation MathML element.

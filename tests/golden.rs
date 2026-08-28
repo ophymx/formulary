@@ -123,13 +123,29 @@ fn rejects_non_math_root() {
 }
 
 #[test]
-fn unsupported_element_errors() {
-    assert!(parse("<math><menclose notation=\"box\"><mn>1</mn></menclose></math>").is_err());
+fn unknown_element_recovers_with_warning() {
+    let root = parse("<math><menclose notation=\"box\"><mn>1</mn></menclose></math>").unwrap();
+    assert_eq!(root.warnings.len(), 1);
+    assert!(matches!(
+        &root.warnings[0],
+        formulary::Warning::UnknownElement { element } if element == "menclose"
+    ));
+    // The contents still render.
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let laid = layout(&root, &font, &LayoutOptions { font_size: 16.0 });
+    assert_eq!(glyphs(&laid).len(), 1);
 }
 
 #[test]
-fn mfrac_wrong_arity_errors() {
-    assert!(parse("<math><mfrac><mn>1</mn></mfrac></math>").is_err());
+fn mfrac_wrong_arity_falls_back_to_row() {
+    let root = parse("<math><mfrac><mn>1</mn></mfrac></math>").unwrap();
+    assert_eq!(root.warnings.len(), 1);
+    // Spec fallback: the child renders as if in an mrow, no fraction bar.
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let laid = layout(&root, &font, &LayoutOptions { font_size: 16.0 });
+    assert!(laid.items.iter().all(|i| matches!(i, formulary::Item::Glyph { .. })));
 }
 
 #[test]
@@ -876,9 +892,19 @@ fn mtable_geometry_sane() {
 }
 
 #[test]
-fn mtable_rejects_stray_children() {
-    assert!(parse("<math><mtable><mi>x</mi></mtable></math>").is_err());
-    assert!(parse("<math><mtable><mtr><mi>x</mi></mtr></mtable></math>").is_err());
+fn mtable_stray_children_are_wrapped() {
+    // Anonymous fixup: stray children become rows/cells, with warnings.
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    for markup in [
+        "<math><mtable><mi>x</mi></mtable></math>",
+        "<math><mtable><mtr><mi>x</mi></mtr></mtable></math>",
+    ] {
+        let root = parse(markup).unwrap();
+        assert_eq!(root.warnings.len(), 1, "{markup}");
+        let laid = layout(&root, &font, &LayoutOptions { font_size: 16.0 });
+        assert_eq!(glyphs(&laid).len(), 1, "{markup}");
+    }
 }
 
 #[test]
@@ -941,12 +967,18 @@ fn multiscripts_geometry_sane() {
     assert!(k.1 > 0.0 && l.1 < 0.0);
 
     // Structure errors.
-    assert!(parse("<math><mmultiscripts><mi>x</mi><mi>i</mi></mmultiscripts></math>").is_err());
-    assert!(parse(
+    let odd = parse("<math><mmultiscripts><mi>x</mi><mi>i</mi></mmultiscripts></math>").unwrap();
+    assert!(!odd.warnings.is_empty());
+    assert!(!parse(
         "<math><mmultiscripts><mi>x</mi><mprescripts/><mi>a</mi><mi>b</mi><mprescripts/></mmultiscripts></math>"
     )
-    .is_err());
-    assert!(parse("<math><mmultiscripts></mmultiscripts></math>").is_err());
+    .unwrap()
+    .warnings
+    .is_empty());
+    assert!(!parse("<math><mmultiscripts></mmultiscripts></math>")
+        .unwrap()
+        .warnings
+        .is_empty());
 }
 
 #[test]
@@ -983,15 +1015,21 @@ fn mfenced_desugars_to_fenced_row() {
 }
 
 #[test]
-fn underover_wrong_arity_errors() {
-    assert!(parse("<math><mover><mi>x</mi></mover></math>").is_err());
-    assert!(parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>").is_err());
+fn underover_wrong_arity_warns() {
+    assert!(!parse("<math><mover><mi>x</mi></mover></math>").unwrap().warnings.is_empty());
+    assert!(!parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>")
+        .unwrap()
+        .warnings
+        .is_empty());
 }
 
 #[test]
-fn scripts_wrong_arity_errors() {
-    assert!(parse("<math><msup><mi>x</mi></msup></math>").is_err());
-    assert!(parse("<math><msubsup><mi>x</mi><mn>1</mn></msubsup></math>").is_err());
+fn scripts_wrong_arity_warns() {
+    assert!(!parse("<math><msup><mi>x</mi></msup></math>").unwrap().warnings.is_empty());
+    assert!(!parse("<math><msubsup><mi>x</mi><mn>1</mn></msubsup></math>")
+        .unwrap()
+        .warnings
+        .is_empty());
 }
 
 #[test]

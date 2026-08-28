@@ -192,10 +192,10 @@ fn wpt_corpus() {
     files.sort();
 
     let mut total = 0usize;
-    let mut ok = 0usize;
+    let mut clean = 0usize;
+    let mut recovered = 0usize;
     let mut xml_errors = 0usize;
-    let mut arity_errors = 0usize;
-    let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
+    let mut warned: BTreeMap<String, usize> = BTreeMap::new();
     let mut failures: Vec<String> = Vec::new();
 
     for file in &files {
@@ -206,25 +206,31 @@ fn wpt_corpus() {
             total += 1;
             let markup = resolve_entities(fragment);
             let outcome = std::panic::catch_unwind(|| {
-                let parse_result = parse(&markup).map(|_| ());
+                let warnings = parse(&markup).map(|root| root.warnings);
                 let invariants = check_invariants(&markup, &font);
-                (parse_result, invariants)
+                (warnings, invariants)
             });
             let rel = file.strip_prefix(&root).unwrap_or(file).display();
             match outcome {
                 Err(_) => failures.push(format!("PANIC in {rel}: {}", snippet(&markup))),
-                Ok((parse_result, invariants)) => {
-                    match parse_result {
-                        Ok(()) => ok += 1,
-                        Err(ParseError::Xml(_)) => xml_errors += 1,
-                        Err(ParseError::Unsupported { element }) => {
-                            *unsupported.entry(element).or_default() += 1;
+                Ok((warnings, invariants)) => {
+                    match warnings {
+                        Ok(w) if w.is_empty() => clean += 1,
+                        Ok(w) => {
+                            recovered += 1;
+                            for warning in w {
+                                let element = match warning {
+                                    formulary::Warning::UnknownElement { element } => element,
+                                    formulary::Warning::InvalidStructure {
+                                        element, ..
+                                    } => format!("{element} (structure)"),
+                                };
+                                *warned.entry(element).or_default() += 1;
+                            }
                         }
-                        Err(ParseError::WrongArity { .. })
-                        | Err(ParseError::InvalidStructure { .. }) => {
-                            arity_errors += 1;
+                        Err(ParseError::Xml(_)) | Err(ParseError::NotMath { .. }) => {
+                            xml_errors += 1
                         }
-                        Err(ParseError::NotMath { .. }) => xml_errors += 1,
                     }
                     if let Err(e) = invariants {
                         failures.push(format!("INVARIANT in {rel}: {e}: {}", snippet(&markup)));
@@ -236,14 +242,15 @@ fn wpt_corpus() {
 
     eprintln!("== WPT mathml corpus ==");
     eprintln!("files: {}, fragments: {total}", files.len());
-    eprintln!("parsed and laid out: {ok}");
-    eprintln!("xml/html-isms rejected: {xml_errors}, arity errors: {arity_errors}");
-    let unsupported_total: usize = unsupported.values().sum();
-    eprintln!("unsupported element hits: {unsupported_total}");
-    let mut by_count: Vec<_> = unsupported.into_iter().collect();
+    eprintln!("clean: {clean}, recovered with warnings: {recovered}");
+    eprintln!("rendered: {} ({:.1}%)", clean + recovered,
+        100.0 * (clean + recovered) as f64 / total as f64);
+    eprintln!("xml/html-isms rejected: {xml_errors}");
+    let mut by_count: Vec<_> = warned.into_iter().collect();
     by_count.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    eprintln!("top warnings:");
     for (element, n) in by_count.iter().take(20) {
-        eprintln!("  {element:>20}: {n}");
+        eprintln!("  {element:>25}: {n}");
     }
     // Group failures by kind so 500 repeats of one bug read as one line.
     let mut by_kind: BTreeMap<&str, (usize, &str)> = BTreeMap::new();

@@ -8,6 +8,10 @@
 //! No webview, no rasterization in the core, no I/O: you bring the font bytes
 //! (any font with a MATH table, e.g. STIX Two Math or New Computer Modern).
 //!
+//! Parsing follows MathML Core's error recovery: unknown or structurally
+//! invalid elements render as `mrow` fallbacks and are reported in
+//! [`MathRoot::warnings`]; only malformed XML is a hard error.
+//!
 //! ```
 //! use formulary::{parse, layout, LayoutOptions, MathFont};
 //!
@@ -28,7 +32,7 @@ mod parse;
 #[cfg(feature = "svg")]
 pub mod svg;
 
-pub use ast::{DisplayMode, MathRoot};
+pub use ast::{DisplayMode, MathRoot, Warning};
 pub use font::{FontError, GlyphId, MathFont};
 pub use layout::{layout, Item, Layout, LayoutOptions};
 pub use parse::{parse, ParseError};

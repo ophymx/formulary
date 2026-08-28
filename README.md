@@ -59,12 +59,21 @@ Not (yet) supported: `menclose` (not in MathML Core), `mtable` spans and
 alignment attributes, RTL math, content MathML, HTML inside token elements,
 linebreaking.
 
+### Error handling
+
+Parsing is lenient, following MathML Core's error-recovery rules: unknown
+elements and structurally invalid markup (an `mfrac` with three children, a
+stray `<none/>`) render via the spec's `mrow` fallback instead of failing,
+and each recovery is reported in `MathRoot::warnings`. Only malformed XML
+and a non-`<math>` root are hard errors. Check `warnings.is_empty()` when
+you need to know the markup was fully understood.
+
 Against the [web-platform-tests](https://github.com/web-platform-tests/wpt)
-`mathml/` corpus (2,762 extracted fragments, including crashtests): 87%
-parse and lay out cleanly with zero panics and zero geometric-invariant
-violations; the rest are rejected for the unsupported constructs above.
-Fetch the corpus with `tools/fetch-wpt.sh`, then `cargo test --test
-wpt_corpus -- --nocapture` prints the support matrix.
+`mathml/` corpus (2,762 extracted fragments, including crashtests): 98%
+render — 88% with no warnings — with zero panics and zero
+geometric-invariant violations; the remaining 2% are malformed-XML
+fragments. Fetch the corpus with `tools/fetch-wpt.sh`, then `cargo test
+--test wpt_corpus -- --nocapture` prints the support matrix.
 
 ## Testing
 

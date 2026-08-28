@@ -1,29 +1,22 @@
 //! Presentation MathML → typed element tree.
+//!
+//! Parsing is lenient, per MathML Core's error handling: unknown elements
+//! and structurally invalid markup lay out as `mrow` fallbacks, recorded as
+//! [`Warning`]s on the returned [`MathRoot`]. Only malformed XML and a
+//! non-`<math>` root are hard errors.
 
-use crate::ast::{DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs, ScriptLevel};
+use crate::ast::{
+    DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs, ScriptLevel, Warning,
+};
 
-/// Errors produced while turning MathML markup into an element tree.
+/// Errors that prevent producing a tree at all. Everything else is recovered
+/// from and reported via [`MathRoot::warnings`].
 #[derive(Debug)]
 pub enum ParseError {
     /// The input is not well-formed XML.
     Xml(roxmltree::Error),
     /// The root element is not `<math>`.
     NotMath { found: String },
-    /// An element this version of the crate cannot lay out yet.
-    Unsupported { element: String },
-    /// An element with a fixed arity got the wrong number of children
-    /// (e.g. `<mfrac>` requires exactly two).
-    WrongArity {
-        element: &'static str,
-        expected: usize,
-        found: usize,
-    },
-    /// An element's children don't form the structure the spec requires
-    /// (e.g. `<mmultiscripts>` with an odd number of script elements).
-    InvalidStructure {
-        element: &'static str,
-        reason: &'static str,
-    },
 }
 
 impl core::fmt::Display for ParseError {
@@ -32,19 +25,6 @@ impl core::fmt::Display for ParseError {
             ParseError::Xml(e) => write!(f, "malformed XML: {e}"),
             ParseError::NotMath { found } => {
                 write!(f, "expected <math> root element, found <{found}>")
-            }
-            ParseError::Unsupported { element } => {
-                write!(f, "unsupported MathML element <{element}>")
-            }
-            ParseError::WrongArity {
-                element,
-                expected,
-                found,
-            } => {
-                write!(f, "<{element}> requires {expected} children, found {found}")
-            }
-            ParseError::InvalidStructure { element, reason } => {
-                write!(f, "<{element}>: {reason}")
             }
         }
     }
@@ -71,41 +51,58 @@ pub fn parse(source: &str) -> Result<MathRoot, ParseError> {
         Some("block") => DisplayMode::Block,
         _ => DisplayMode::Inline,
     };
-    let children = parse_children(root)?;
-    Ok(MathRoot { display, children })
+    let mut warnings = Vec::new();
+    let children = parse_children(root, &mut warnings);
+    Ok(MathRoot {
+        display,
+        children,
+        warnings,
+    })
 }
 
-fn parse_children(parent: roxmltree::Node) -> Result<Vec<Node>, ParseError> {
+fn parse_children(parent: roxmltree::Node, warnings: &mut Vec<Warning>) -> Vec<Node> {
     parent
         .children()
         .filter(|c| c.is_element())
-        .map(parse_node)
+        .map(|c| parse_node(c, warnings))
         .collect()
 }
 
-fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
+/// The spec's recovery for invalid markup: the element renders as an `mrow`
+/// of whatever children it has.
+fn invalid(
+    node: roxmltree::Node,
+    element: &'static str,
+    detail: String,
+    warnings: &mut Vec<Warning>,
+) -> Node {
+    warnings.push(Warning::InvalidStructure {
+        element: element.to_string(),
+        detail,
+    });
+    Node::Row(parse_children(node, warnings))
+}
+
+fn parse_node(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
     let name = node.tag_name().name();
     match name {
-        "mi" => Ok(Node::Identifier(text_content(node))),
-        "mn" => Ok(Node::Number(text_content(node))),
+        "mi" => Node::Identifier(text_content(node)),
+        "mn" => Node::Number(text_content(node)),
         // `<ms>` renders as text wrapped in its quote characters.
         "ms" => {
             let lquote = node.attribute("lquote").unwrap_or("\"");
             let rquote = node.attribute("rquote").unwrap_or("\"");
-            Ok(Node::Text(format!(
-                "{lquote}{}{rquote}",
-                text_content(node)
-            )))
+            Node::Text(format!("{lquote}{}{rquote}", text_content(node)))
         }
         // `<semantics>` and legacy `<maction>` render their first child;
         // annotations and alternate actions are ignored.
         "semantics" | "maction" => match node.children().find(|c| c.is_element()) {
-            Some(first) => parse_node(first),
-            None => Ok(Node::Row(Vec::new())),
+            Some(first) => parse_node(first, warnings),
+            None => Node::Row(Vec::new()),
         },
         // `<merror>` renders its contents; error styling (red, border) is a
         // consumer concern until the display list carries paint info.
-        "merror" => Ok(Node::Row(parse_children(node)?)),
+        "merror" => Node::Row(parse_children(node, warnings)),
         // Deprecated `<mfenced>` desugars to its equivalent mrow: open fence,
         // children joined by separators (last one repeating), close fence.
         "mfenced" => {
@@ -125,7 +122,7 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
             if !open.is_empty() {
                 row.push(mo(open));
             }
-            for (i, child) in parse_children(node)?.into_iter().enumerate() {
+            for (i, child) in parse_children(node, warnings).into_iter().enumerate() {
                 if i > 0 {
                     if let Some(sep) = separators.get(i - 1).or(separators.last()) {
                         row.push(mo(&sep.to_string()));
@@ -136,9 +133,9 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
             if !close.is_empty() {
                 row.push(mo(close));
             }
-            Ok(Node::Row(row))
+            Node::Row(row)
         }
-        "mo" => Ok(Node::Operator {
+        "mo" => Node::Operator {
             text: text_content(node),
             attrs: OperatorAttrs {
                 form: match node.attribute("form") {
@@ -154,35 +151,23 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
                 largeop: bool_attr(node, "largeop"),
                 movablelimits: bool_attr(node, "movablelimits"),
             },
-        }),
-        "mtext" => Ok(Node::Text(text_content(node))),
-        "mrow" => Ok(Node::Row(parse_children(node)?)),
+        },
+        "mtext" => Node::Text(text_content(node)),
+        "mrow" => Node::Row(parse_children(node, warnings)),
         "mfrac" => {
-            let mut children = parse_children(node)?;
+            let mut children = parse_children(node, warnings);
             if children.len() != 2 {
-                return Err(ParseError::WrongArity {
-                    element: "mfrac",
-                    expected: 2,
-                    found: children.len(),
-                });
+                return invalid_parsed(name, children, warnings);
             }
             let den = Box::new(children.pop().expect("len checked"));
             let num = Box::new(children.pop().expect("len checked"));
-            Ok(Node::Frac { num, den })
+            Node::Frac { num, den }
         }
         "msub" | "msup" | "msubsup" => {
             let expected = if name == "msubsup" { 3 } else { 2 };
-            let mut children = parse_children(node)?;
+            let mut children = parse_children(node, warnings);
             if children.len() != expected {
-                return Err(ParseError::WrongArity {
-                    element: match name {
-                        "msub" => "msub",
-                        "msup" => "msup",
-                        _ => "msubsup",
-                    },
-                    expected,
-                    found: children.len(),
-                });
+                return invalid_parsed(name, children, warnings);
             }
             let mut rest = children.split_off(1);
             let base = Box::new(children.pop().expect("len checked"));
@@ -194,21 +179,13 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
                     Some(Box::new(rest.remove(0))),
                 ),
             };
-            Ok(Node::Scripts { base, sub, sup })
+            Node::Scripts { base, sub, sup }
         }
         "munder" | "mover" | "munderover" => {
             let expected = if name == "munderover" { 3 } else { 2 };
-            let mut children = parse_children(node)?;
+            let mut children = parse_children(node, warnings);
             if children.len() != expected {
-                return Err(ParseError::WrongArity {
-                    element: match name {
-                        "munder" => "munder",
-                        "mover" => "mover",
-                        _ => "munderover",
-                    },
-                    expected,
-                    found: children.len(),
-                });
+                return invalid_parsed(name, children, warnings);
             }
             let mut rest = children.split_off(1);
             let base = Box::new(children.pop().expect("len checked"));
@@ -220,132 +197,179 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
                     Some(Box::new(rest.remove(0))),
                 ),
             };
-            Ok(Node::UnderOver {
+            Node::UnderOver {
                 base,
                 under,
                 over,
                 accent: bool_attr(node, "accent"),
                 accent_under: bool_attr(node, "accentunder"),
-            })
-        }
-        "mmultiscripts" => {
-            let mut elements = node.children().filter(|c| c.is_element());
-            let base = match elements.next() {
-                Some(b) if !matches!(b.tag_name().name(), "none" | "mprescripts") => {
-                    Box::new(parse_node(b)?)
-                }
-                _ => {
-                    return Err(ParseError::InvalidStructure {
-                        element: "mmultiscripts",
-                        reason: "missing base",
-                    })
-                }
-            };
-            // Flat script slots, split at <mprescripts/>; <none/> is an
-            // empty slot.
-            let mut sections: [Vec<Option<Node>>; 2] = [Vec::new(), Vec::new()];
-            let mut section = 0;
-            for child in elements {
-                match child.tag_name().name() {
-                    "mprescripts" => {
-                        if section == 1 {
-                            return Err(ParseError::InvalidStructure {
-                                element: "mmultiscripts",
-                                reason: "more than one <mprescripts/>",
-                            });
-                        }
-                        section = 1;
-                    }
-                    "none" => sections[section].push(None),
-                    _ => sections[section].push(Some(parse_node(child)?)),
-                }
             }
-            let pair_up = |slots: Vec<Option<Node>>| {
-                if !slots.len().is_multiple_of(2) {
-                    return Err(ParseError::InvalidStructure {
-                        element: "mmultiscripts",
-                        reason: "scripts must come in sub/sup pairs",
-                    });
-                }
-                let mut pairs = Vec::with_capacity(slots.len() / 2);
-                let mut it = slots.into_iter();
-                while let (Some(sub), Some(sup)) = (it.next(), it.next()) {
-                    pairs.push((sub, sup));
-                }
-                Ok(pairs)
-            };
-            let [post_slots, pre_slots] = sections;
-            Ok(Node::MultiScripts {
-                base,
-                post: pair_up(post_slots)?,
-                pre: pair_up(pre_slots)?,
-            })
         }
+        "mmultiscripts" => parse_multiscripts(node, warnings),
         "mtable" => {
             let rows = node
                 .children()
                 .filter(|c| c.is_element())
                 .map(|row| {
                     if row.tag_name().name() != "mtr" {
-                        return Err(ParseError::Unsupported {
-                            element: row.tag_name().name().to_string(),
+                        // Anonymous fixup, as browsers do: a stray child
+                        // becomes a one-cell row.
+                        warnings.push(Warning::InvalidStructure {
+                            element: "mtable".to_string(),
+                            detail: format!(
+                                "child <{}> is not <mtr>",
+                                row.tag_name().name()
+                            ),
                         });
+                        return vec![parse_node(row, warnings)];
                     }
                     row.children()
                         .filter(|c| c.is_element())
                         .map(|cell| {
                             if cell.tag_name().name() != "mtd" {
-                                return Err(ParseError::Unsupported {
-                                    element: cell.tag_name().name().to_string(),
+                                warnings.push(Warning::InvalidStructure {
+                                    element: "mtr".to_string(),
+                                    detail: format!(
+                                        "child <{}> is not <mtd>",
+                                        cell.tag_name().name()
+                                    ),
                                 });
+                                return parse_node(cell, warnings);
                             }
-                            Ok(Node::Row(parse_children(cell)?))
+                            Node::Row(parse_children(cell, warnings))
                         })
                         .collect()
                 })
-                .collect::<Result<Vec<Vec<Node>>, ParseError>>()?;
-            Ok(Node::Table { rows })
+                .collect();
+            Node::Table { rows }
         }
-        "msqrt" => Ok(Node::Sqrt(parse_children(node)?)),
-        "mspace" => Ok(Node::Space {
+        "msqrt" => Node::Sqrt(parse_children(node, warnings)),
+        "mspace" => Node::Space {
             width: length_attr(node, "width"),
             height: length_attr(node, "height"),
             depth: length_attr(node, "depth"),
-        }),
-        "mstyle" => Ok(Node::Styled {
+        },
+        "mstyle" => Node::Styled {
             display_style: match node.attribute("displaystyle") {
                 Some("true") => Some(true),
                 Some("false") => Some(false),
                 _ => None,
             },
             script_level: node.attribute("scriptlevel").and_then(parse_script_level),
-            children: parse_children(node)?,
-        }),
-        "mphantom" => Ok(Node::Phantom(parse_children(node)?)),
-        "mpadded" => Ok(Node::Padded {
+            children: parse_children(node, warnings),
+        },
+        "mphantom" => Node::Phantom(parse_children(node, warnings)),
+        "mpadded" => Node::Padded {
             width: length_attr(node, "width"),
             height: length_attr(node, "height"),
             depth: length_attr(node, "depth"),
             lspace: length_attr(node, "lspace"),
             voffset: length_attr(node, "voffset"),
-            children: parse_children(node)?,
-        }),
+            children: parse_children(node, warnings),
+        },
         "mroot" => {
-            let mut children = parse_children(node)?;
+            let mut children = parse_children(node, warnings);
             if children.len() != 2 {
-                return Err(ParseError::WrongArity {
-                    element: "mroot",
-                    expected: 2,
-                    found: children.len(),
-                });
+                return invalid_parsed(name, children, warnings);
             }
             let index = Box::new(children.pop().expect("len checked"));
             let base = Box::new(children.pop().expect("len checked"));
-            Ok(Node::Root { base, index })
+            Node::Root { base, index }
         }
-        other => Err(ParseError::Unsupported {
-            element: other.to_string(),
-        }),
+        // `<none/>` and `<mprescripts/>` outside mmultiscripts render as
+        // nothing.
+        "none" | "mprescripts" => {
+            warnings.push(Warning::InvalidStructure {
+                element: name.to_string(),
+                detail: "only valid inside <mmultiscripts>".to_string(),
+            });
+            Node::Row(Vec::new())
+        }
+        other => {
+            warnings.push(Warning::UnknownElement {
+                element: other.to_string(),
+            });
+            // Core lays out unknown elements as mrow. An unknown element
+            // holding only text (stray HTML like <b>x</b>) keeps its text.
+            if node.children().any(|c| c.is_element()) {
+                Node::Row(parse_children(node, warnings))
+            } else {
+                Node::Text(text_content(node))
+            }
+        }
+    }
+}
+
+/// `mrow` fallback for a fixed-arity element whose children are already
+/// parsed.
+fn invalid_parsed(
+    element: &str,
+    children: Vec<Node>,
+    warnings: &mut Vec<Warning>,
+) -> Node {
+    warnings.push(Warning::InvalidStructure {
+        element: element.to_string(),
+        detail: format!("wrong number of children ({})", children.len()),
+    });
+    Node::Row(children)
+}
+
+fn parse_multiscripts(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
+    let mut elements = node.children().filter(|c| c.is_element());
+    let base = match elements.next() {
+        Some(b) if !matches!(b.tag_name().name(), "none" | "mprescripts") => {
+            Box::new(parse_node(b, warnings))
+        }
+        _ => {
+            return invalid(
+                node,
+                "mmultiscripts",
+                "missing base".to_string(),
+                warnings,
+            )
+        }
+    };
+    // Flat script slots, split at <mprescripts/>; <none/> is an empty slot.
+    let mut sections: [Vec<Option<Node>>; 2] = [Vec::new(), Vec::new()];
+    let mut section = 0;
+    for child in elements {
+        match child.tag_name().name() {
+            "mprescripts" => {
+                if section == 1 {
+                    return invalid(
+                        node,
+                        "mmultiscripts",
+                        "more than one <mprescripts/>".to_string(),
+                        warnings,
+                    );
+                }
+                section = 1;
+            }
+            "none" => sections[section].push(None),
+            _ => sections[section].push(Some(parse_node(child, warnings))),
+        }
+    }
+    if sections.iter().any(|s| !s.len().is_multiple_of(2)) {
+        return invalid(
+            node,
+            "mmultiscripts",
+            "scripts must come in sub/sup pairs".to_string(),
+            warnings,
+        );
+    }
+    let pair_up = |slots: Vec<Option<Node>>| {
+        let mut pairs = Vec::with_capacity(slots.len() / 2);
+        let mut it = slots.into_iter();
+        while let (Some(sub), Some(sup)) = (it.next(), it.next()) {
+            pairs.push((sub, sup));
+        }
+        pairs
+    };
+    let [post_slots, pre_slots] = sections;
+    Node::MultiScripts {
+        base,
+        post: pair_up(post_slots),
+        pre: pair_up(pre_slots),
     }
 }
 
