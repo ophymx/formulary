@@ -1444,6 +1444,144 @@ fn accents_use_attachment_points() {
 }
 
 #[test]
+fn golden_rtl() {
+    check_golden(
+        "rtl",
+        r#"<math dir="rtl"><mi>x</mi><mo>=</mo><msup><mi>a</mi><mn>2</mn></msup><mo>+</mo><msqrt><mi>b</mi><mo>+</mo><mn>1</mn></msqrt><mo>(</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>)</mo></math>"#,
+    );
+}
+
+#[test]
+fn rtl_reverses_rows_and_mirrors_fences() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let ltr = layout(
+        &parse("<math><mi>x</mi><mo>+</mo><mn>2</mn></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let rtl = layout(
+        &parse(r#"<math dir="rtl"><mi>x</mi><mo>+</mo><mn>2</mn></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((ltr.width - rtl.width).abs() < 1e-3);
+    let (lg, rg) = (glyphs(&ltr), glyphs(&rtl));
+    // Logical order is preserved in the item list; positions mirror.
+    assert!(lg[0].0 < lg[2].0, "LTR: x leftmost");
+    assert!(rg[0].0 > rg[2].0, "RTL: x rightmost");
+
+    // Fences swap to their mirrored counterparts.
+    let gid_at = |l: &formulary::Layout, i: usize| match l.items[i] {
+        formulary::Item::Glyph { id, .. } => id,
+        _ => panic!("glyph"),
+    };
+    let ltr_f = layout(
+        &parse("<math><mo>(</mo><mi>x</mi><mo>)</mo></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let rtl_f = layout(
+        &parse(r#"<math dir="rtl"><mo>(</mo><mi>x</mi><mo>)</mo></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(gid_at(&ltr_f, 0), gid_at(&rtl_f, 2), "( mirrors to )");
+    assert_eq!(gid_at(&ltr_f, 2), gid_at(&rtl_f, 0));
+}
+
+#[test]
+fn rtl_scripts_sit_left_of_base() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let laid = layout(
+        &parse(r#"<math dir="rtl"><msup><mi>x</mi><mn>2</mn></msup></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&laid);
+    assert!(g[1].0 < g[0].0, "superscript left of base in RTL");
+
+    // Prescripts and postscripts swap sides.
+    let multi = layout(
+        &parse(r#"<math dir="rtl"><mmultiscripts><mi>R</mi><mi>i</mi><none/><mprescripts/><mi>k</mi><none/></mmultiscripts></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let mg = glyphs(&multi);
+    // Item order: (columns laid before base) then base... find base R (full size).
+    let base_x = mg.iter().find(|g| g.2 == 16.0).unwrap().0;
+    // The logical postscript i must now sit left of the base.
+    assert!(mg.iter().any(|g| g.2 < 16.0 && g.0 < base_x));
+    assert!(mg.iter().any(|g| g.2 < 16.0 && g.0 > base_x));
+}
+
+#[test]
+fn rtl_radical_mirrors() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let laid = layout(
+        &parse(r#"<math dir="rtl"><msqrt><mi>x</mi></msqrt></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    // Overbar starts at x=0 over the content; the surd sits to its right,
+    // drawn mirrored.
+    let (mut bar_x, mut surd) = (None, None);
+    for item in &laid.items {
+        match *item {
+            formulary::Item::Rule { x, .. } => bar_x = Some(x),
+            formulary::Item::Glyph { x, mirrored, .. } if mirrored => surd = Some(x),
+            _ => {}
+        }
+    }
+    assert_eq!(bar_x, Some(0.0));
+    let surd_x = surd.expect("mirrored surd glyph");
+    let content_x = glyphs(&laid)
+        .iter()
+        .map(|g| g.0)
+        .fold(f32::MAX, f32::min);
+    assert!(surd_x >= content_x, "surd on the right side");
+
+    // LTR radicals are unaffected (no mirrored glyphs).
+    let ltr = layout(
+        &parse("<math><msqrt><mi>x</mi></msqrt></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(ltr
+        .items
+        .iter()
+        .all(|i| !matches!(i, formulary::Item::Glyph { mirrored: true, .. })));
+}
+
+#[test]
+fn rtl_table_reverses_columns() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let ltr = layout(
+        &parse("<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let rtl = layout(
+        &parse(r#"<math dir="rtl"><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let (lg, rg) = (glyphs(&ltr), glyphs(&rtl));
+    assert!(lg[0].0 < lg[1].0, "LTR: a left of b");
+    assert!(rg[0].0 > rg[1].0, "RTL: a right of b");
+}
+
+#[test]
 fn underover_wrong_arity_warns() {
     assert!(!parse("<math><mover><mi>x</mi></mover></math>").unwrap().warnings.is_empty());
     assert!(!parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>")

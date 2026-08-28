@@ -41,19 +41,31 @@ pub fn to_svg(layout: &Layout, font: &MathFont) -> String {
                 y,
                 size,
                 color,
+                mirrored,
             } => {
                 let mut builder = PathBuilder::default();
                 if font.face().outline_glyph(id, &mut builder).is_none() {
                     continue; // blank glyph (e.g. space)
                 }
                 // Outline is in font units, y-up; scale to `size` and flip y.
+                // Mirrored glyphs flip about their advance box.
                 let s = size / font.units_per_em();
+                let (tx, sx) = if mirrored {
+                    let advance = font
+                        .face()
+                        .glyph_hor_advance(id)
+                        .unwrap_or(0);
+                    (x + f32::from(advance) * s, format!("-{}", fmt(s)))
+                } else {
+                    (x, fmt(s))
+                };
                 let _ = writeln!(
                     svg,
-                    r#"<path transform="translate({} {}) scale({s} -{s})"{f} d="{d}"/>"#,
-                    fmt(x),
+                    r#"<path transform="translate({} {}) scale({sx} -{sy})"{f} d="{d}"/>"#,
+                    fmt(tx),
                     fmt(y),
-                    s = fmt(s),
+                    sx = sx,
+                    sy = fmt(s),
                     f = fill(color),
                     d = builder.d,
                 );

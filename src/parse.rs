@@ -6,8 +6,8 @@
 //! non-`<math>` root are hard errors.
 
 use crate::ast::{
-    Color, ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs, ScriptLevel,
-    StyleOverrides, Warning,
+    Color, ColumnAlign, Direction, DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs,
+    ScriptLevel, StyleOverrides, Warning,
 };
 use crate::mathvariant::{apply_variant, to_math_italic, MathVariant};
 
@@ -117,6 +117,11 @@ fn style_overrides(node: roxmltree::Node) -> StyleOverrides {
         color: color_attr(node, "mathcolor"),
         background: color_attr(node, "mathbackground"),
         border: None,
+        dir: match node.attribute("dir") {
+            Some("rtl") => Some(Direction::Rtl),
+            Some("ltr") => Some(Direction::Ltr),
+            _ => None,
+        },
     }
 }
 

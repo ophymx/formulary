@@ -32,6 +32,14 @@ pub enum Length {
     Percent(f32),
 }
 
+/// Layout direction, from the `dir` global attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Direction {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
 /// An sRGB color with alpha, as parsed from `mathcolor`/`mathbackground`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
@@ -63,6 +71,8 @@ pub struct StyleOverrides {
     /// Not a MathML attribute: a 1px border in this color around the box,
     /// used for `merror`'s user-agent styling.
     pub border: Option<Color>,
+    /// `dir`: layout direction for the subtree.
+    pub dir: Option<Direction>,
 }
 
 impl StyleOverrides {

@@ -60,10 +60,16 @@ full script-level and cramped-style propagation; the global style
 attributes (`displaystyle`, `scriptlevel`, `mathsize`, `mathcolor`,
 `mathbackground`) on any element, with colors carried on display-list items
 (`None` = the consumer's text color) and `merror` drawing its red-border /
-light-yellow user-agent styling.
+light-yellow user-agent styling; right-to-left math via the `dir` global
+attribute — mirrored rows, script sides, prescripts, table columns, and
+radicals (the surd renders with a `mirrored` display-list flag, since fonts
+rarely ship pre-mirrored forms), with paired delimiters swapped to their
+Unicode mirrors. Token content itself stays logical-order (no Arabic
+bidi/shaping yet).
 
-Not (yet) supported: `menclose` (not in MathML Core), `mtable` spans, RTL
-math, content MathML, HTML inside token elements, linebreaking.
+Not (yet) supported: `menclose` (not in MathML Core), `mtable` spans,
+Arabic-script token content, content MathML, HTML inside token elements,
+linebreaking.
 
 ### Error handling
 

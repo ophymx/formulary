@@ -12,7 +12,8 @@
 //! size changes rather than scaling a previous result.
 
 use crate::ast::{
-    Color, ColumnAlign, DisplayMode, Form, Length, MathRoot, Node, ScriptLevel, StyleOverrides,
+    Color, ColumnAlign, Direction, DisplayMode, Form, Length, MathRoot, Node, ScriptLevel,
+    StyleOverrides,
 };
 use crate::font::{GlyphId, KernCorner, MathFont, Stretched};
 use crate::opdict;
@@ -52,6 +53,10 @@ pub enum Item {
         y: f32,
         size: f32,
         color: Option<Color>,
+        /// Draw the glyph flipped horizontally about its advance box (used
+        /// for the radical in right-to-left math, where fonts rarely ship
+        /// pre-mirrored forms).
+        mirrored: bool,
     },
     /// A filled rectangle (fraction bars, radical rules, merror borders).
     /// `(x, y)` is the top-left corner; `h` extends downward. `color: None`
@@ -140,6 +145,8 @@ struct Ctx<'a, 'f> {
     cramped: bool,
     /// Inherited `mathcolor`; `None` is the consumer's text color.
     color: Option<Color>,
+    /// Right-to-left layout (`dir="rtl"`).
+    rtl: bool,
     /// Font size at the current script level, stamped on emitted glyphs.
     size: f32,
     /// Font design units → output units at the current script level.
@@ -148,9 +155,10 @@ struct Ctx<'a, 'f> {
 
 impl<'a, 'f> Ctx<'a, 'f> {
     fn new(font: &'a MathFont<'f>, base_size: f32, display_style: bool) -> Self {
-        Self::derive(font, base_size, 0, display_style, false, None)
+        Self::derive(font, base_size, 0, display_style, false, None, false)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn derive(
         font: &'a MathFont<'f>,
         base_size: f32,
@@ -158,6 +166,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
         display_style: bool,
         cramped: bool,
         color: Option<Color>,
+        rtl: bool,
     ) -> Self {
         let size = base_size * script_factor(font, script_level);
         Ctx {
@@ -167,6 +176,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             display_style,
             cramped,
             color,
+            rtl,
             size,
             scale: size / font.units_per_em(),
         }
@@ -187,6 +197,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             false,
             self.cramped || cramped,
             self.color,
+            self.rtl,
         )
     }
 
@@ -199,6 +210,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             self.display_style,
             true,
             self.color,
+            self.rtl,
         )
     }
 
@@ -212,6 +224,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             false,
             self.cramped,
             self.color,
+            self.rtl,
         )
     }
 
@@ -225,6 +238,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             false,
             self.cramped || cramped,
             self.color,
+            self.rtl,
         )
     }
 
@@ -238,6 +252,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
             false,
             self.cramped || cramped,
             self.color,
+            self.rtl,
         )
     }
 
@@ -267,6 +282,10 @@ impl<'a, 'f> Ctx<'a, 'f> {
             styles.display_style.unwrap_or(self.display_style),
             self.cramped,
             styles.color.or(self.color),
+            match styles.dir {
+                Some(d) => d == Direction::Rtl,
+                None => self.rtl,
+            },
         )
     }
 
@@ -344,6 +363,10 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
         } => layout_frac(ctx, num, den, *line_thickness),
         Node::Scripts { base, sub, sup } => {
             layout_scripts(ctx, base, sub.as_deref(), sup.as_deref())
+        }
+        // In RTL the post/pre script sides mirror.
+        Node::MultiScripts { base, post, pre } if ctx.rtl => {
+            layout_multiscripts(ctx, base, pre, post)
         }
         Node::MultiScripts { base, post, pre } => layout_multiscripts(ctx, base, post, pre),
         Node::UnderOver {
@@ -521,13 +544,22 @@ fn layout_table(ctx: &Ctx, rows: &[Vec<Node>], column_align: &[ColumnAlign]) -> 
             .copied()
             .unwrap_or_default()
     };
+    // Visual column position: logical column j counts from the right in RTL.
+    let col_start = |j: usize| -> f32 {
+        let logical: f32 = col_widths[..j].iter().map(|w| w + 2.0 * hpad).sum();
+        if ctx.rtl {
+            total_width - logical - (col_widths[j] + 2.0 * hpad)
+        } else {
+            logical
+        }
+    };
     let mut y = -out.ascent;
     for (row, &(row_ascent, row_descent)) in cells.into_iter().zip(&row_extents) {
         let baseline = y + vpad + row_ascent;
-        let mut x = 0.0;
         for (j, cell) in row.into_iter().enumerate() {
             let slack = col_widths[j] - cell.width;
-            let dx = x + hpad
+            let dx = col_start(j)
+                + hpad
                 + match align_of(j) {
                     ColumnAlign::Left => 0.0,
                     ColumnAlign::Center => slack / 2.0,
@@ -537,7 +569,6 @@ fn layout_table(ctx: &Ctx, rows: &[Vec<Node>], column_align: &[ColumnAlign]) -> 
                 item.translate(dx, baseline);
                 out.items.push(item);
             }
-            x += col_widths[j] + 2.0 * hpad;
         }
         y = baseline + row_descent + vpad;
     }
@@ -568,7 +599,7 @@ fn layout_radical(ctx: &Ctx, content: MathBox, degree: Option<MathBox>) -> MathB
         .map(|base| ctx.font.stretch_vertical(base, target / ctx.scale));
     let glyph_height = stretched.as_ref().map_or(0.0, |s| {
         let mut probe = Vec::new();
-        emit_stretched(ctx, s, 0.0, 0.0, &mut probe).0
+        emit_stretched(ctx, s, 0.0, 0.0, false, &mut probe).0
     });
 
     // A taller-than-needed glyph centers its excess: half widens the gap,
@@ -581,39 +612,69 @@ fn layout_radical(ctx: &Ctx, content: MathBox, degree: Option<MathBox>) -> MathB
     out.ascent = content.ascent + gap + thickness + ctx.constant(c.radical_extra_ascender());
     out.descent = content.descent.max(bar_top + glyph_height);
 
-    // Horizontal assembly: [kern degree kern] glyph, radicand under the bar.
-    let mut x = 0.0;
-    if let Some(deg) = degree {
-        x += ctx.constant(c.radical_kern_before_degree());
+    // Horizontal assembly, mirrored under RTL:
+    // LTR: [kern degree kern][surd][radicand];  RTL: [radicand][surd][degree].
+    let place_degree = |out: &mut MathBox, deg: MathBox, x: f32| -> f32 {
         // Degree bottom sits this fraction of the glyph's span above its bottom.
         let raise = f32::from(c.radical_degree_bottom_raise_percent()) / 100.0;
         let glyph_bottom = bar_top + glyph_height;
         let deg_baseline = glyph_bottom - raise * glyph_height - deg.descent;
         out.ascent = out.ascent.max(deg.ascent - deg_baseline);
         out.descent = out.descent.max(deg_baseline + deg.descent);
+        let width = deg.width;
         for mut item in deg.items {
             item.translate(x, deg_baseline);
             out.items.push(item);
         }
-        x += deg.width + ctx.constant(c.radical_kern_after_degree());
-        x = x.max(0.0); // a large negative kern must not push the glyph out
+        width
+    };
+    if ctx.rtl {
+        out.items.push(Item::Rule {
+            x: 0.0,
+            y: bar_top,
+            w: content.width,
+            h: thickness,
+            color: ctx.color,
+        });
+        for item in content.items {
+            out.items.push(item);
+        }
+        let mut x = content.width;
+        if let Some(s) = &stretched {
+            let (_, advance) = emit_stretched(ctx, s, x, bar_top, true, &mut out.items);
+            x += advance;
+        }
+        if let Some(deg) = degree {
+            x += ctx.constant(c.radical_kern_after_degree()).max(0.0);
+            x += place_degree(&mut out, deg, x);
+            x += ctx.constant(c.radical_kern_before_degree());
+        }
+        out.width = x.max(content.width);
+    } else {
+        let mut x = 0.0;
+        if let Some(deg) = degree {
+            x += ctx.constant(c.radical_kern_before_degree());
+            let w = place_degree(&mut out, deg, x);
+            x += w + ctx.constant(c.radical_kern_after_degree());
+            x = x.max(0.0); // a large negative kern must not push the glyph out
+        }
+        if let Some(s) = &stretched {
+            let (_, advance) = emit_stretched(ctx, s, x, bar_top, false, &mut out.items);
+            x += advance;
+        }
+        out.items.push(Item::Rule {
+            x,
+            y: bar_top,
+            w: content.width,
+            h: thickness,
+            color: ctx.color,
+        });
+        for mut item in content.items {
+            item.translate(x, 0.0);
+            out.items.push(item);
+        }
+        out.width = x + content.width;
     }
-    if let Some(s) = &stretched {
-        let (_, advance) = emit_stretched(ctx, s, x, bar_top, &mut out.items);
-        x += advance;
-    }
-    out.items.push(Item::Rule {
-        x,
-        y: bar_top,
-        w: content.width,
-        h: thickness,
-        color: ctx.color,
-    });
-    for mut item in content.items {
-        item.translate(x, 0.0);
-        out.items.push(item);
-    }
-    out.width = x + content.width;
     out
 }
 
@@ -1050,21 +1111,41 @@ fn layout_scripts_on(
             sub_shift - base_box.descent,
         )
     });
-    let sup_x = (base_box.width + sup_kern).max(0.0);
-    let sub_x = (base_box.width - base_box.italic_correction + sub_kern).max(0.0);
-    let end = sub_box
-        .as_ref()
-        .map_or(0.0, |b| sub_x + b.width)
-        .max(sup_box.as_ref().map_or(0.0, |b| sup_x + b.width))
-        .max(base_box.width);
+    // In RTL, scripts sit to the left of the base (no kern/italic
+    // correction refinement on the mirrored side yet).
+    let (base_x, sup_x, sub_x, total_width);
+    if ctx.rtl {
+        let extent = sub_box
+            .as_ref()
+            .map_or(0.0, |b| b.width)
+            .max(sup_box.as_ref().map_or(0.0, |b| b.width));
+        base_x = ctx.constant(c.space_after_script()) + extent;
+        sup_x = base_x - sup_box.as_ref().map_or(0.0, |b| b.width);
+        sub_x = base_x - sub_box.as_ref().map_or(0.0, |b| b.width);
+        total_width = base_x + base_box.width;
+    } else {
+        base_x = 0.0;
+        sup_x = (base_box.width + sup_kern).max(0.0);
+        sub_x = (base_box.width - base_box.italic_correction + sub_kern).max(0.0);
+        let end = sub_box
+            .as_ref()
+            .map_or(0.0, |b| sub_x + b.width)
+            .max(sup_box.as_ref().map_or(0.0, |b| sup_x + b.width))
+            .max(base_box.width);
+        total_width = end + ctx.constant(c.space_after_script());
+    }
 
+    let mut base_items = base_box.items;
+    for item in &mut base_items {
+        item.translate(base_x, 0.0);
+    }
     let mut out = MathBox {
-        width: end + ctx.constant(c.space_after_script()),
+        width: total_width,
         ascent: base_box.ascent,
         descent: base_box.descent,
         italic_correction: 0.0,
         lone_glyph: None,
-        items: base_box.items,
+        items: base_items,
     };
     if let Some(s) = sup_box {
         out.ascent = out.ascent.max(sup_shift + s.ascent);
@@ -1218,23 +1299,38 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
         slots.push(slot);
     }
 
-    // Pass 2: stretch deferred operators to the row's extent, then assemble.
+    // Pass 2: stretch deferred operators to the row's extent, then place —
+    // left-to-right, or mirrored from the right edge under dir="rtl".
+    let boxes: Vec<(f32, f32, MathBox)> = slots
+        .into_iter()
+        .map(|(lspace, rspace, slot)| {
+            let b = match slot {
+                Slot::Fixed(b) => b,
+                Slot::Stretchy { node, symmetric } => {
+                    layout_embellished_stretchy(ctx, node, symmetric, max_ascent, max_descent)
+                }
+            };
+            (lspace, rspace, b)
+        })
+        .collect();
+    let total: f32 = boxes.iter().map(|(l, r, b)| l + b.width + r).sum();
     let mut out = MathBox::empty();
-    for (lspace, rspace, slot) in slots {
-        let mut b = match slot {
-            Slot::Fixed(b) => b,
-            Slot::Stretchy { node, symmetric } => {
-                layout_embellished_stretchy(ctx, node, symmetric, max_ascent, max_descent)
-            }
+    out.width = total;
+    let mut x = 0.0;
+    for (lspace, rspace, mut b) in boxes {
+        let pos = if ctx.rtl {
+            total - x - lspace - b.width
+        } else {
+            x + lspace
         };
         for item in &mut b.items {
-            item.translate(out.width + lspace, 0.0);
+            item.translate(pos, 0.0);
         }
         out.items.append(&mut b.items);
-        out.width += lspace + b.width + rspace;
         out.ascent = out.ascent.max(b.ascent);
         out.descent = out.descent.max(b.descent);
         out.italic_correction = b.italic_correction;
+        x += lspace + b.width + rspace;
     }
     out
 }
@@ -1287,6 +1383,44 @@ fn layout_embellished_stretchy(
     }
 }
 
+/// Unicode bidi-mirrored counterpart for RTL rendering of paired
+/// delimiters and directional relations (the pairs math actually uses).
+fn bidi_mirror(c: char) -> Option<char> {
+    const PAIRS: &[(char, char)] = &[
+        ('(', ')'),
+        ('[', ']'),
+        ('{', '}'),
+        ('⟨', '⟩'),
+        ('⌈', '⌉'),
+        ('⌊', '⌋'),
+        ('<', '>'),
+        ('≤', '≥'),
+        ('⟦', '⟧'),
+        ('∈', '∋'),
+        ('∉', '∌'),
+        ('⊂', '⊃'),
+        ('⊆', '⊇'),
+    ];
+    PAIRS.iter().find_map(|&(a, b)| {
+        if c == a {
+            Some(b)
+        } else if c == b {
+            Some(a)
+        } else {
+            None
+        }
+    })
+}
+
+/// The character to render for `c` in the current direction.
+fn directed_char(ctx: &Ctx, c: char) -> char {
+    if ctx.rtl {
+        bidi_mirror(c).unwrap_or(c)
+    } else {
+        c
+    }
+}
+
 fn single_char(text: &str) -> Option<char> {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
@@ -1296,8 +1430,16 @@ fn single_char(text: &str) -> Option<char> {
 }
 
 /// Emit a [`Stretched`] glyph with its ink top at `top` (layout units),
-/// returning `(ink height, advance width)` in layout units.
-fn emit_stretched(ctx: &Ctx, stretched: &Stretched, x: f32, top: f32, items: &mut Vec<Item>) -> (f32, f32) {
+/// returning `(ink height, advance width)` in layout units. `mirror` flips
+/// the glyphs horizontally (RTL radicals).
+fn emit_stretched(
+    ctx: &Ctx,
+    stretched: &Stretched,
+    x: f32,
+    top: f32,
+    mirror: bool,
+    items: &mut Vec<Item>,
+) -> (f32, f32) {
     match stretched {
         Stretched::Glyph(g) => {
             let Some(ink) = ctx.font.ink_box(*g) else {
@@ -1309,6 +1451,7 @@ fn emit_stretched(ctx: &Ctx, stretched: &Stretched, x: f32, top: f32, items: &mu
                 y: top + f32::from(ink.y_max) * ctx.scale,
                 size: ctx.size,
                 color: ctx.color,
+                mirrored: mirror,
             });
             (
                 f32::from(ink.y_max - ink.y_min) * ctx.scale,
@@ -1329,6 +1472,7 @@ fn emit_stretched(ctx: &Ctx, stretched: &Stretched, x: f32, top: f32, items: &mu
                     y: bottom - offset * ctx.scale + f32::from(ink.y_min) * ctx.scale,
                     size: ctx.size,
                     color: ctx.color,
+                    mirrored: mirror,
                 });
             }
             (height, advance)
@@ -1348,6 +1492,7 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
                 y: 0.0,
                 size: ctx.size,
                 color: ctx.color,
+                mirrored: false,
             });
             out.width = ctx.font.advance(*g) * ctx.scale;
             out.lone_glyph = Some(*g);
@@ -1365,6 +1510,7 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
                     y: 0.0,
                     size: ctx.size,
                     color: ctx.color,
+                    mirrored: false,
                 });
                 if let Some(ink) = ctx.font.ink_box(g) {
                     out.ascent = out.ascent.max(f32::from(ink.y_max) * ctx.scale);
@@ -1427,6 +1573,7 @@ fn layout_stretchy_operator(
     max_ascent: f32,
     max_descent: f32,
 ) -> MathBox {
+    let c = directed_char(ctx, c);
     let glyph = ctx.font.glyph_index(c).expect("checked by caller");
     let axis = ctx.constant(ctx.font.constants().axis_height());
     let (mut target, mut target_ascent) = if symmetric {
@@ -1460,9 +1607,9 @@ fn layout_stretchy_operator(
     let mut out = MathBox::empty();
     // Probe the actual ink height first to center any excess.
     let mut probe = Vec::new();
-    let (height, _) = emit_stretched(ctx, &stretched, 0.0, 0.0, &mut probe);
+    let (height, _) = emit_stretched(ctx, &stretched, 0.0, 0.0, false, &mut probe);
     let ascent = target_ascent + (height - target).max(0.0) / 2.0;
-    let (height, advance) = emit_stretched(ctx, &stretched, 0.0, -ascent, &mut out.items);
+    let (height, advance) = emit_stretched(ctx, &stretched, 0.0, -ascent, false, &mut out.items);
     out.width = advance;
     out.ascent = ascent;
     out.descent = height - ascent;
@@ -1479,10 +1626,10 @@ fn layout_large_operator(ctx: &Ctx, c: char) -> MathBox {
     let stretched = ctx.font.stretch_vertical(glyph, min_height);
     let axis = ctx.constant(ctx.font.constants().axis_height());
     let mut probe = Vec::new();
-    let (height, _) = emit_stretched(ctx, &stretched, 0.0, 0.0, &mut probe);
+    let (height, _) = emit_stretched(ctx, &stretched, 0.0, 0.0, false, &mut probe);
     let ascent = axis + height / 2.0;
     let mut out = MathBox::empty();
-    let (height, advance) = emit_stretched(ctx, &stretched, 0.0, -ascent, &mut out.items);
+    let (height, advance) = emit_stretched(ctx, &stretched, 0.0, -ascent, false, &mut out.items);
     out.width = advance;
     out.ascent = ascent;
     out.descent = height - ascent;
@@ -1560,6 +1707,7 @@ fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
     }
     let mut out = MathBox::empty();
     for c in text.chars() {
+        let c = directed_char(ctx, c);
         let Some(gid) = ctx.font.glyph_index(c) else {
             // No .notdef rendering yet: skip unmapped characters.
             continue;
@@ -1571,6 +1719,7 @@ fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
             y: 0.0,
             size: ctx.size,
             color: ctx.color,
+            mirrored: false,
         });
         out.width += ctx.font.advance(gid) * ctx.scale;
         out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
@@ -1588,6 +1737,13 @@ fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
 fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
     let shaper = ctx.font.shaper()?;
     let mut buffer = rustybuzz::UnicodeBuffer::new();
+    let mirrored: String;
+    let text = if ctx.rtl {
+        mirrored = text.chars().map(|c| directed_char(ctx, c)).collect();
+        &mirrored
+    } else {
+        text
+    };
     buffer.push_str(text);
     buffer.set_direction(rustybuzz::Direction::LeftToRight);
     // Select the OpenType `math` script: math fonts register ssty/dtls there,
@@ -1627,6 +1783,7 @@ fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
             y,
             size: ctx.size,
             color: ctx.color,
+            mirrored: false,
         });
         out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
         if let Some(ink) = ctx.font.ink_box(gid) {
