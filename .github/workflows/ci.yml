@@ -22,6 +22,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test
+        # The golden SVGs are currently identical with shaping on or off
+        # (ssty is applied manually in both paths and no golden exercises
+        # kerned multi-character runs). If a golden ever becomes
+        # shaping-dependent, this job will fail on it — split the goldens
+        # per feature set rather than loosening them.
         run: |
           if [ "${{ matrix.features }}" = "no-default" ]; then
             cargo test --no-default-features --features svg
@@ -58,6 +63,16 @@ jobs:
         run: tools/fetch-wpt.sh
       - name: Run conformance harness
         run: cargo test --test wpt_corpus -- --nocapture
+
+  msrv:
+    name: MSRV (1.87)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.87
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --all-features
 
   package:
     name: Package

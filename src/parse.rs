@@ -118,8 +118,8 @@ fn style_overrides(node: roxmltree::Node) -> StyleOverrides {
         background: color_attr(node, "mathbackground"),
         border: None,
         dir: match node.attribute("dir") {
-            Some("rtl") => Some(Direction::Rtl),
-            Some("ltr") => Some(Direction::Ltr),
+            Some(v) if v.eq_ignore_ascii_case("rtl") => Some(Direction::Rtl),
+            Some(v) if v.eq_ignore_ascii_case("ltr") => Some(Direction::Ltr),
             _ => None,
         },
     }
@@ -559,10 +559,11 @@ fn parse_color(s: &str) -> Option<Color> {
     Some(Color::rgb(named.0, named.1, named.2))
 }
 
+/// Boolean attribute values are ASCII case-insensitive in MathML Core.
 fn bool_attr(node: roxmltree::Node, name: &str) -> Option<bool> {
     match node.attribute(name) {
-        Some("true") => Some(true),
-        Some("false") => Some(false),
+        Some(v) if v.eq_ignore_ascii_case("true") => Some(true),
+        Some(v) if v.eq_ignore_ascii_case("false") => Some(false),
         _ => None,
     }
 }
@@ -597,13 +598,14 @@ fn parse_script_level(s: &str) -> Option<ScriptLevel> {
 
 /// Concatenated text of a token element, with the whitespace trimming MathML
 /// applies to token content: leading/trailing whitespace removed, internal
-/// runs collapsed to a single space.
+/// runs collapsed to a single space. Only XML whitespace (space, tab, CR,
+/// LF) collapses — U+00A0, U+2009 and the other Unicode spaces are content.
 fn text_content(node: roxmltree::Node) -> String {
     let raw: String = node.children().filter_map(|c| c.text()).collect();
     let mut out = String::with_capacity(raw.len());
     let mut in_space = true; // leading whitespace drops
     for c in raw.chars() {
-        if c.is_whitespace() {
+        if matches!(c, ' ' | '\t' | '\n' | '\r') {
             if !in_space {
                 out.push(' ');
                 in_space = true;

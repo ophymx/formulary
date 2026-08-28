@@ -1689,6 +1689,42 @@ fn rtl_table_reverses_columns() {
 }
 
 #[test]
+fn unicode_spaces_are_content() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    // NBSP is content, not collapsible whitespace: the mtext occupies width.
+    let nbsp = layout(
+        &parse("<math><mtext>&#xA0;</mtext></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(nbsp.width > 0.0, "NBSP must survive whitespace trimming");
+    // ASCII whitespace still collapses.
+    let padded = layout(&parse("<math><mi>  x  </mi></math>").unwrap(), &font, &opts);
+    let tight = layout(&parse("<math><mi>x</mi></math>").unwrap(), &font, &opts);
+    assert_eq!(padded, tight);
+}
+
+#[test]
+fn boolean_attributes_are_case_insensitive() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let mixed = layout(
+        &parse(r#"<math><mfrac displaystyle="True"><mn>1</mn><mn>2</mn></mfrac></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let block = layout(
+        &parse(r#"<math><mfrac displaystyle="true"><mn>1</mn><mn>2</mn></mfrac></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(mixed, block);
+}
+
+#[test]
 fn underover_wrong_arity_warns() {
     assert!(!parse("<math><mover><mi>x</mi></mover></math>")
         .unwrap()

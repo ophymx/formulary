@@ -2,6 +2,7 @@
 name = "formulary"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 description = "Native MathML Core layout: OpenType MATH metrics in, resolution-independent display list out"
 keywords = ["mathml", "math", "layout", "typesetting"]

@@ -39,6 +39,11 @@ pub struct Layout {
 }
 
 /// One drawable in the display list.
+///
+/// Consumers must honor every field to render correctly: in particular
+/// [`Item::Glyph::mirrored`] — ignoring it draws right-to-left radicals
+/// backwards — and item order, which is painter's order (backgrounds are
+/// emitted before the content they sit behind).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Item {
@@ -1165,32 +1170,6 @@ fn layout_scripts_on(
     let (sup_shift, sub_shift) = script_shifts(ctx, &base_box, &subs, &sups);
     let c = ctx.font.constants();
 
-    // Superscripts attach at the full advance; subscripts tuck left by the
-    // base's italic correction (the classic ∫ lower-limit tuck). On top of
-    // that, the font's MathKern staircases cut scripts into the base's
-    // corner whitespace at the heights where they actually sit.
-    let sup_kern = sup_box.as_ref().map_or(0.0, |s| {
-        script_kern(
-            ctx,
-            &base_box,
-            s,
-            KernCorner::TopRight,
-            KernCorner::BottomLeft,
-            sup_shift - s.descent,
-            base_box.ascent - sup_shift,
-        )
-    });
-    let sub_kern = sub_box.as_ref().map_or(0.0, |s| {
-        script_kern(
-            ctx,
-            &base_box,
-            s,
-            KernCorner::BottomRight,
-            KernCorner::TopLeft,
-            s.ascent - sub_shift,
-            sub_shift - base_box.descent,
-        )
-    });
     // In RTL, scripts sit to the left of the base (no kern/italic
     // correction refinement on the mirrored side yet).
     let (base_x, sup_x, sub_x, total_width);
@@ -1204,6 +1183,32 @@ fn layout_scripts_on(
         sub_x = base_x - sub_box.as_ref().map_or(0.0, |b| b.width);
         total_width = base_x + base_box.width;
     } else {
+        // Superscripts attach at the full advance; subscripts tuck left by
+        // the base's italic correction (the classic ∫ lower-limit tuck). On
+        // top of that, the font's MathKern staircases cut scripts into the
+        // base's corner whitespace at the heights where they actually sit.
+        let sup_kern = sup_box.as_ref().map_or(0.0, |s| {
+            script_kern(
+                ctx,
+                &base_box,
+                s,
+                KernCorner::TopRight,
+                KernCorner::BottomLeft,
+                sup_shift - s.descent,
+                base_box.ascent - sup_shift,
+            )
+        });
+        let sub_kern = sub_box.as_ref().map_or(0.0, |s| {
+            script_kern(
+                ctx,
+                &base_box,
+                s,
+                KernCorner::BottomRight,
+                KernCorner::TopLeft,
+                s.ascent - sub_shift,
+                sub_shift - base_box.descent,
+            )
+        });
         base_x = 0.0;
         sup_x = (base_box.width + sup_kern).max(0.0);
         sub_x = (base_box.width - base_box.italic_correction + sub_kern).max(0.0);
@@ -1665,8 +1670,18 @@ fn layout_stretchy_operator(
     max_ascent: f32,
     max_descent: f32,
 ) -> MathBox {
-    let c = directed_char(ctx, c);
-    let glyph = ctx.font.glyph_index(c).expect("checked by caller");
+    // The row pass verified coverage of the unmirrored character; a font
+    // that lacks the bidi-mirrored counterpart falls back to the unmirrored
+    // glyph rather than panicking.
+    let directed = directed_char(ctx, c);
+    let Some(glyph) = ctx
+        .font
+        .glyph_index(directed)
+        .or_else(|| ctx.font.glyph_index(c))
+    else {
+        return layout_text_run(ctx, &c.to_string());
+    };
+    let c = directed;
     let axis = ctx.constant(ctx.font.constants().axis_height());
     let (mut target, mut target_ascent) = if symmetric {
         let above = (max_ascent - axis).max(max_descent + axis).max(0.0);
