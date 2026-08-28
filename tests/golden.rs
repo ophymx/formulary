@@ -894,6 +894,82 @@ fn mtable_geometry_sane() {
 }
 
 #[test]
+fn golden_table_spans() {
+    check_golden(
+        "table_spans",
+        r#"<math><mo>[</mo><mtable><mtr><mtd columnspan="2"><mi>a</mi><mo>+</mo><mi>b</mi></mtd><mtd rowspan="2"><mfrac><mn>1</mn><mn>2</mn></mfrac></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable><mo>]</mo></math>"#,
+    );
+}
+
+#[test]
+fn table_spans_shape_the_grid() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+
+    // columnspan: the wide cell shares its width across both columns, so
+    // the table is narrower than with the same content in a single column.
+    let spanned = layout(
+        &parse(r#"<math><mtable><mtr><mtd columnspan="2"><mn>12345</mn></mtd></mtr><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let unspanned = layout(
+        &parse("<math><mtable><mtr><mtd><mn>12345</mn></mtd></mtr><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(spanned.width < unspanned.width);
+
+    // rowspan: the cell occupies its column across both rows, so the
+    // second row's cell lands in the second column, under the first row's.
+    let laid = layout(
+        &parse(r#"<math><mtable><mtr><mtd rowspan="2"><mi>x</mi></mtd><mtd><mi>a</mi></mtd></mtr><mtr><mtd><mi>b</mi></mtd></mtr></mtable></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&laid);
+    assert_eq!(g.len(), 3);
+    let (x, a, b) = (g[0], g[1], g[2]);
+    assert!((a.0 - b.0).abs() < 0.5, "a and b share the second column");
+    assert!(x.0 < a.0, "x sits in the first column");
+    assert!(a.1 < b.1, "a and b are on different rows");
+
+    // A tall rowspan cell grows the spanned rows rather than overflowing.
+    let tall = layout(
+        &parse(r#"<math><mtable><mtr><mtd rowspan="2"><mfrac><mfrac><mn>1</mn><mn>2</mn></mfrac><mn>3</mn></mfrac></mtd><mtd><mi>a</mi></mtd></mtr><mtr><mtd><mi>b</mi></mtd></mtr></mtable></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let two_plain = layout(
+        &parse("<math><mtable><mtr><mtd><mi>a</mi></mtd></mtr><mtr><mtd><mi>b</mi></mtd></mtr></mtable></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(tall.ascent + tall.descent > two_plain.ascent + two_plain.descent);
+
+    // Invalid span values fall back to 1.
+    let bad = layout(
+        &parse(r#"<math><mtable><mtr><mtd columnspan="0"><mi>a</mi></mtd><mtd columnspan="x"><mi>b</mi></mtd></mtr></mtable></math>"#)
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    let plain = layout(
+        &parse("<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert_eq!(bad, plain);
+}
+
+#[test]
 fn mtable_stray_children_are_wrapped() {
     // Anonymous fixup: stray children become rows/cells, with warnings.
     let data = stix();

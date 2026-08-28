@@ -13,7 +13,7 @@
 
 use crate::ast::{
     Color, ColumnAlign, Direction, DisplayMode, Form, Length, MathRoot, Node, ScriptLevel,
-    StyleOverrides,
+    StyleOverrides, TableCell,
 };
 use crate::font::{GlyphId, KernCorner, MathFont, Stretched};
 use crate::opdict;
@@ -492,39 +492,115 @@ fn decorate(styles: &StyleOverrides, mut b: MathBox) -> MathBox {
 /// and carry Core's UA-stylesheet cell padding (0.4 em / 0.5 ex per side).
 /// `columnalign` sets per-column alignment (default center; last entry
 /// repeats).
-fn layout_table(ctx: &Ctx, rows: &[Vec<Node>], column_align: &[ColumnAlign]) -> MathBox {
+fn layout_table(
+    ctx: &Ctx,
+    rows: &[Vec<TableCell>],
+    column_align: &[ColumnAlign],
+) -> MathBox {
     let cell_ctx = ctx.styled_child(&StyleOverrides {
         display_style: Some(false),
         ..StyleOverrides::default()
     });
-    let cells: Vec<Vec<MathBox>> = rows
-        .iter()
-        .map(|row| row.iter().map(|c| layout_node(&cell_ctx, c)).collect())
-        .collect();
 
-    let n_cols = cells.iter().map(Vec::len).max().unwrap_or(0);
-    let mut col_widths = vec![0.0_f32; n_cols];
-    for row in &cells {
-        for (j, cell) in row.iter().enumerate() {
-            col_widths[j] = col_widths[j].max(cell.width);
+    // Grid placement with occupancy, as in HTML tables: cells slide right
+    // past slots claimed by earlier row/column spans.
+    struct Placed {
+        row: usize,
+        col: usize,
+        row_span: usize,
+        col_span: usize,
+        content: MathBox,
+    }
+    let n_rows = rows.len();
+    let mut occupied: Vec<Vec<bool>> = vec![Vec::new(); n_rows];
+    let mut placed: Vec<Placed> = Vec::new();
+    for (r, row) in rows.iter().enumerate() {
+        let mut c = 0usize;
+        for cell in row {
+            while occupied[r].get(c).copied().unwrap_or(false) {
+                c += 1;
+            }
+            let row_span = (cell.row_span as usize).clamp(1, n_rows - r);
+            let col_span = (cell.col_span as usize).max(1);
+            for occ_row in occupied.iter_mut().skip(r).take(row_span) {
+                if occ_row.len() < c + col_span {
+                    occ_row.resize(c + col_span, false);
+                }
+                for slot in occ_row.iter_mut().skip(c).take(col_span) {
+                    *slot = true;
+                }
+            }
+            placed.push(Placed {
+                row: r,
+                col: c,
+                row_span,
+                col_span,
+                content: layout_node(&cell_ctx, &cell.content),
+            });
+            c += col_span;
         }
     }
-    let row_extents: Vec<(f32, f32)> = cells
-        .iter()
-        .map(|row| {
-            row.iter().fold((0.0_f32, 0.0_f32), |(a, d), c| {
-                (a.max(c.ascent), d.max(c.descent))
-            })
-        })
-        .collect();
+    let n_cols = occupied.iter().map(Vec::len).max().unwrap_or(0);
 
-    // Core's mtd padding; adjacent cells' padding adds up to the classic
-    // 0.8 em / 1.0 ex inter-cell spacing, plus outer edge padding.
     let hpad = 0.4 * ctx.size;
     let vpad = 0.5 * ctx.font.x_height() * ctx.scale;
+
+    // Column widths from span-1 cells first, then widen spanned columns
+    // evenly when a spanning cell needs more room (a span absorbs the
+    // inter-column padding it crosses).
+    let mut col_widths = vec![0.0_f32; n_cols];
+    for p in placed.iter().filter(|p| p.col_span == 1) {
+        col_widths[p.col] = col_widths[p.col].max(p.content.width);
+    }
+    let mut spanning: Vec<&Placed> = placed.iter().filter(|p| p.col_span > 1).collect();
+    spanning.sort_by_key(|p| p.col_span);
+    for p in spanning {
+        let cols = &mut col_widths[p.col..p.col + p.col_span];
+        let available =
+            cols.iter().sum::<f32>() + 2.0 * hpad * (p.col_span - 1) as f32;
+        let deficit = p.content.width - available;
+        if deficit > 0.0 {
+            let share = deficit / p.col_span as f32;
+            for w in cols {
+                *w += share;
+            }
+        }
+    }
+
+    // Row extents likewise: span-1 cells set each row's ascent/descent
+    // (a rowspan cell's ascent still belongs to its first row, where its
+    // baseline sits); deeper cells then grow the descents of the rows they
+    // span.
+    let mut row_ascent = vec![0.0_f32; n_rows];
+    let mut row_descent = vec![0.0_f32; n_rows];
+    for p in &placed {
+        row_ascent[p.row] = row_ascent[p.row].max(p.content.ascent);
+        if p.row_span == 1 {
+            row_descent[p.row] = row_descent[p.row].max(p.content.descent);
+        }
+    }
+    let mut row_spanning: Vec<&Placed> = placed.iter().filter(|p| p.row_span > 1).collect();
+    row_spanning.sort_by_key(|p| p.row_span);
+    for p in row_spanning {
+        let below: f32 = (p.row + 1..p.row + p.row_span)
+            .map(|rr| row_ascent[rr] + row_descent[rr] + 2.0 * vpad)
+            .sum();
+        let deficit = p.content.descent - (row_descent[p.row] + below);
+        if deficit > 0.0 {
+            let share = deficit / p.row_span as f32;
+            for d in row_descent.iter_mut().skip(p.row).take(p.row_span) {
+                *d += share;
+            }
+        }
+    }
+
     let total_width = col_widths.iter().sum::<f32>() + 2.0 * hpad * n_cols as f32;
-    let total_height = row_extents.iter().map(|(a, d)| a + d).sum::<f32>()
-        + 2.0 * vpad * rows.len() as f32;
+    let total_height = row_ascent
+        .iter()
+        .zip(&row_descent)
+        .map(|(a, d)| a + d)
+        .sum::<f32>()
+        + 2.0 * vpad * n_rows as f32;
 
     // Center the table vertically on the math axis; a table shorter than
     // twice the axis height sits on the baseline instead of dipping below.
@@ -553,24 +629,37 @@ fn layout_table(ctx: &Ctx, rows: &[Vec<Node>], column_align: &[ColumnAlign]) -> 
             logical
         }
     };
+    // Baseline of each row.
+    let mut baselines = Vec::with_capacity(n_rows);
     let mut y = -out.ascent;
-    for (row, &(row_ascent, row_descent)) in cells.into_iter().zip(&row_extents) {
-        let baseline = y + vpad + row_ascent;
-        for (j, cell) in row.into_iter().enumerate() {
-            let slack = col_widths[j] - cell.width;
-            let dx = col_start(j)
-                + hpad
-                + match align_of(j) {
-                    ColumnAlign::Left => 0.0,
-                    ColumnAlign::Center => slack / 2.0,
-                    ColumnAlign::Right => slack,
-                };
-            for mut item in cell.items {
-                item.translate(dx, baseline);
-                out.items.push(item);
-            }
+    for r in 0..n_rows {
+        let baseline = y + vpad + row_ascent[r];
+        baselines.push(baseline);
+        y = baseline + row_descent[r] + vpad;
+    }
+
+    for p in placed {
+        let last_col = p.col + p.col_span - 1;
+        let region_start = if ctx.rtl {
+            col_start(last_col)
+        } else {
+            col_start(p.col)
+        };
+        let region_width = col_widths[p.col..=last_col].iter().sum::<f32>()
+            + 2.0 * hpad * (p.col_span - 1) as f32;
+        let slack = region_width - p.content.width;
+        let dx = region_start
+            + hpad
+            + match align_of(p.col) {
+                ColumnAlign::Left => 0.0,
+                ColumnAlign::Center => slack / 2.0,
+                ColumnAlign::Right => slack,
+            };
+        let baseline = baselines[p.row];
+        for mut item in p.content.items {
+            item.translate(dx, baseline);
+            out.items.push(item);
         }
-        y = baseline + row_descent + vpad;
     }
     out
 }

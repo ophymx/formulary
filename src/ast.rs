@@ -81,6 +81,27 @@ impl StyleOverrides {
     }
 }
 
+/// One `<mtd>`: its children as an implied `mrow`, plus grid spans.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableCell {
+    pub content: Node,
+    /// `rowspan`, clamped to at least 1 (and to the table's extent at
+    /// layout time).
+    pub row_span: u32,
+    /// `columnspan`, clamped to at least 1.
+    pub col_span: u32,
+}
+
+impl TableCell {
+    pub fn new(content: Node) -> Self {
+        TableCell {
+            content,
+            row_span: 1,
+            col_span: 1,
+        }
+    }
+}
+
 /// Horizontal alignment of cells within a table column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColumnAlign {
@@ -223,11 +244,10 @@ pub enum Node {
         /// The `accentunder` attribute.
         accent_under: Option<bool>,
     },
-    /// `<mtable>` — rows of `<mtr>` containing `<mtd>` cells. Each cell is
-    /// its children as an implied `mrow`. Rows may be ragged (missing
-    /// trailing cells render empty). Spans are not supported yet.
+    /// `<mtable>` — rows of `<mtr>` containing `<mtd>` cells. Rows may be
+    /// ragged (missing trailing cells render empty).
     Table {
-        rows: Vec<Vec<Node>>,
+        rows: Vec<Vec<TableCell>>,
         /// Per-column alignment from `columnalign`; the last entry repeats
         /// for further columns. Empty means center.
         column_align: Vec<ColumnAlign>,

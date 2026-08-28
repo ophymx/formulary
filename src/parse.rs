@@ -7,7 +7,7 @@
 
 use crate::ast::{
     Color, ColumnAlign, Direction, DisplayMode, Form, Length, MathRoot, Node, OperatorAttrs,
-    ScriptLevel, StyleOverrides, Warning,
+    ScriptLevel, StyleOverrides, TableCell, Warning,
 };
 use crate::mathvariant::{apply_variant, to_math_italic, MathVariant};
 
@@ -287,7 +287,7 @@ fn parse_element(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
                                 row.tag_name().name()
                             ),
                         });
-                        return vec![parse_node(row, warnings)];
+                        return vec![TableCell::new(parse_node(row, warnings))];
                     }
                     row.children()
                         .filter(|c| c.is_element())
@@ -300,9 +300,23 @@ fn parse_element(node: roxmltree::Node, warnings: &mut Vec<Warning>) -> Node {
                                         cell.tag_name().name()
                                     ),
                                 });
-                                return parse_node(cell, warnings);
+                                return TableCell::new(parse_node(cell, warnings));
                             }
-                            Node::Row(parse_children(cell, warnings))
+                            // Invalid span values behave like an absent
+                            // attribute (span 1); spans are capped like
+                            // HTML's.
+                            let span = |name: &str, cap: u32| {
+                                cell.attribute(name)
+                                    .and_then(|v| v.trim().parse::<u32>().ok())
+                                    .filter(|&v| v >= 1)
+                                    .unwrap_or(1)
+                                    .min(cap)
+                            };
+                            TableCell {
+                                content: Node::Row(parse_children(cell, warnings)),
+                                row_span: span("rowspan", 65_534),
+                                col_span: span("columnspan", 1_000),
+                            }
                         })
                         .collect()
                 })
