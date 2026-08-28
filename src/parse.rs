@@ -137,6 +137,38 @@ fn parse_node(node: roxmltree::Node) -> Result<Node, ParseError> {
             };
             Ok(Node::Scripts { base, sub, sup })
         }
+        "munder" | "mover" | "munderover" => {
+            let expected = if name == "munderover" { 3 } else { 2 };
+            let mut children = parse_children(node)?;
+            if children.len() != expected {
+                return Err(ParseError::WrongArity {
+                    element: match name {
+                        "munder" => "munder",
+                        "mover" => "mover",
+                        _ => "munderover",
+                    },
+                    expected,
+                    found: children.len(),
+                });
+            }
+            let mut rest = children.split_off(1);
+            let base = Box::new(children.pop().expect("len checked"));
+            let (under, over) = match name {
+                "munder" => (Some(Box::new(rest.remove(0))), None),
+                "mover" => (None, Some(Box::new(rest.remove(0)))),
+                _ => (
+                    Some(Box::new(rest.remove(0))),
+                    Some(Box::new(rest.remove(0))),
+                ),
+            };
+            Ok(Node::UnderOver {
+                base,
+                under,
+                over,
+                accent: bool_attr(node, "accent"),
+                accent_under: bool_attr(node, "accentunder"),
+            })
+        }
         "msqrt" => Ok(Node::Sqrt(parse_children(node)?)),
         "mspace" => Ok(Node::Space {
             width: length_attr(node, "width"),

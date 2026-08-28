@@ -24,15 +24,16 @@ impl core::fmt::Display for FontError {
 
 impl std::error::Error for FontError {}
 
-/// A vertically stretched glyph: a single (possibly variant) glyph, or a
-/// bottom-to-top stack of assembly parts.
+/// A stretched glyph: a single (possibly variant) glyph, or a stack of
+/// assembly parts along the stretch axis.
 pub(crate) enum Stretched {
     Glyph(GlyphId),
-    /// `parts` are `(glyph, offset of the part's bottom above the assembly
-    /// bottom)` in design units; `height` is the total assembled extent.
+    /// `parts` are `(glyph, offset along the stretch axis)` in design units,
+    /// measured from the assembly's start (bottom for vertical, left for
+    /// horizontal); `extent` is the total assembled size along that axis.
     Assembly {
         parts: Vec<(GlyphId, f32)>,
-        height: f32,
+        extent: f32,
     },
 }
 
@@ -89,15 +90,28 @@ impl<'a> MathFont<'a> {
     }
 
     /// A glyph stretched vertically to at least `target` design units.
-    ///
+    pub(crate) fn stretch_vertical(&self, glyph: GlyphId, target: f32) -> Stretched {
+        self.stretch(glyph, target, false)
+    }
+
+    /// A glyph stretched horizontally to at least `target` design units.
+    pub(crate) fn stretch_horizontal(&self, glyph: GlyphId, target: f32) -> Stretched {
+        self.stretch(glyph, target, true)
+    }
+
     /// Tries the pre-drawn variants smallest-first, then glyph assembly from
     /// extender parts; falls back to the largest variant (or the base glyph)
     /// when neither can reach the target.
-    pub(crate) fn stretch_vertical(&self, glyph: GlyphId, target: f32) -> Stretched {
+    fn stretch(&self, glyph: GlyphId, target: f32, horizontal: bool) -> Stretched {
         let Some(variants) = self.face.tables().math.and_then(|m| m.variants) else {
             return Stretched::Glyph(glyph);
         };
-        let Some(construction) = variants.vertical_constructions.get(glyph) else {
+        let constructions = if horizontal {
+            variants.horizontal_constructions
+        } else {
+            variants.vertical_constructions
+        };
+        let Some(construction) = constructions.get(glyph) else {
             return Stretched::Glyph(glyph);
         };
         let mut best = glyph;
@@ -110,15 +124,15 @@ impl<'a> MathFont<'a> {
         construction
             .assembly
             .and_then(|asm| {
-                self.assemble_vertical(&asm, f32::from(variants.min_connector_overlap), target)
+                self.assemble(&asm, f32::from(variants.min_connector_overlap), target)
             })
             .unwrap_or(Stretched::Glyph(best))
     }
 
-    /// Stack assembly parts (listed bottom-to-top in the font) to reach
-    /// `target` design units, repeating extenders as needed and distributing
-    /// a uniform connector overlap.
-    fn assemble_vertical(
+    /// Stack assembly parts (listed start-to-end along the stretch axis) to
+    /// reach `target` design units, repeating extenders as needed and
+    /// distributing a uniform connector overlap.
+    fn assemble(
         &self,
         asm: &ttf_parser::math::GlyphAssembly,
         min_overlap: f32,
@@ -157,8 +171,8 @@ impl<'a> MathFont<'a> {
                 parts.push((p.glyph_id, bottom));
                 bottom += f32::from(p.full_advance) - overlap;
             }
-            let height = bottom + overlap; // last part's advance minus nothing
-            return Some(Stretched::Assembly { parts, height });
+            let extent = bottom + overlap;
+            return Some(Stretched::Assembly { parts, extent });
         }
         None
     }

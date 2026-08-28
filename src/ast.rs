@@ -117,6 +117,16 @@ pub enum Node {
     },
     /// `<mphantom>` — occupies its children's space, draws nothing.
     Phantom(Vec<Node>),
+    /// `<munder>`, `<mover>`, or `<munderover>`, normalized like [`Node::Scripts`].
+    UnderOver {
+        base: Box<Node>,
+        under: Option<Box<Node>>,
+        over: Option<Box<Node>>,
+        /// The `accent` attribute (tightens the overscript and keeps its size).
+        accent: Option<bool>,
+        /// The `accentunder` attribute.
+        accent_under: Option<bool>,
+    },
     /// `<mpadded>` — overrides the reported box of its content and can shift
     /// the content within it. `None` keeps the natural value.
     Padded {

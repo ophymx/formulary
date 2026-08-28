@@ -124,7 +124,7 @@ fn rejects_non_math_root() {
 
 #[test]
 fn unsupported_element_errors() {
-    assert!(parse("<math><munder><mo>&#x2211;</mo><mi>n</mi></munder></math>").is_err());
+    assert!(parse("<math><mtable><mtr><mtd><mn>1</mn></mtd></mtr></mtable></math>").is_err());
 }
 
 #[test]
@@ -596,6 +596,114 @@ fn largeop_grows_in_display_style() {
         &opts,
     );
     assert!(opted_out.ascent + opted_out.descent < display.ascent + display.descent);
+}
+
+#[test]
+fn golden_sum_limits() {
+    check_golden(
+        "sum_limits",
+        r#"<math display="block"><munderover><mo>&#x2211;</mo><mrow><mi>n</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><msup><mi>n</mi><mn>2</mn></msup></math>"#,
+    );
+}
+
+#[test]
+fn golden_accent_and_arrow() {
+    check_golden(
+        "accent_and_arrow",
+        r#"<math><mover accent="true"><mi>x</mi><mo>&#x302;</mo></mover><mo>+</mo><mover><mrow><mi>a</mi><mi>b</mi><mi>c</mi></mrow><mo>&#x2192;</mo></mover></math>"#,
+    );
+}
+
+#[test]
+fn movablelimits_and_limit_placement() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let markup = "<math{}><munder><mo>&#x2211;</mo><mrow><mi>n</mi><mo>=</mo><mn>1</mn></mrow></munder></math>";
+
+    // Display style: limits below, centered — box no wider than needed,
+    // descent grows well past the base's.
+    let display = layout(
+        &parse(&markup.replace("{}", r#" display="block""#)).unwrap(),
+        &font,
+        &opts,
+    );
+    // Inline: movablelimits turns it into a subscript — wider, shallower.
+    let inline = layout(&parse(&markup.replace("{}", "")).unwrap(), &font, &opts);
+    assert!(inline.width > display.width);
+    assert!(display.descent > inline.descent);
+
+    // movablelimits="false" keeps limits underneath even inline.
+    let forced = layout(
+        &parse("<math><munder><mo movablelimits=\"false\">&#x2211;</mo><mrow><mi>n</mi><mo>=</mo><mn>1</mn></mrow></munder></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(forced.descent > inline.descent);
+
+    // In display style the ∑ base itself takes its large variant.
+    let inline_sum = layout(&parse("<math><mo>&#x2211;</mo></math>").unwrap(), &font, &opts);
+    assert!(display.ascent + display.descent > inline_sum.ascent + inline_sum.descent);
+}
+
+#[test]
+fn accents_keep_size_and_position() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let hat = layout(
+        &parse(r#"<math><mover accent="true"><mi>x</mi><mo>&#x302;</mo></mover></math>"#).unwrap(),
+        &font,
+        &opts,
+    );
+    let g = glyphs(&hat);
+    assert_eq!(g.len(), 2);
+    // Accent stays at full size (no script shrink)...
+    assert_eq!(g[1].2, 16.0);
+    // ...and raises the box above the bare letter.
+    let bare = layout(&parse("<math><mi>x</mi></math>").unwrap(), &font, &opts);
+    assert!(hat.ascent > bare.ascent);
+    // Non-accent mover drops the script a level.
+    let plain = layout(
+        &parse("<math><mover><mi>x</mi><mo>&#x302;</mo></mover></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!(glyphs(&plain)[1].2 < 16.0);
+}
+
+#[test]
+fn horizontal_arrow_stretches_over_base() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let narrow = layout(
+        &parse("<math><mover><mi>a</mi><mo>&#x2192;</mo></mover></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    let wide = layout(
+        &parse("<math><mover><mrow><mi>a</mi><mi>b</mi><mi>c</mi><mi>d</mi></mrow><mo>&#x2192;</mo></mover></math>")
+            .unwrap(),
+        &font,
+        &opts,
+    );
+    // The arrow must track the base width: total width equals the base row's
+    // width, and the arrow accounts for (nearly) all of it.
+    let base_row = layout(
+        &parse("<math><mrow><mi>a</mi><mi>b</mi><mi>c</mi><mi>d</mi></mrow></math>").unwrap(),
+        &font,
+        &opts,
+    );
+    assert!((wide.width - base_row.width).abs() < 1e-3);
+    assert!(wide.width > narrow.width * 2.0);
+}
+
+#[test]
+fn underover_wrong_arity_errors() {
+    assert!(parse("<math><mover><mi>x</mi></mover></math>").is_err());
+    assert!(parse("<math><munderover><mo>&#x2211;</mo><mn>1</mn></munderover></math>").is_err());
 }
 
 #[test]

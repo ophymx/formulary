@@ -175,6 +175,18 @@ impl<'a, 'f> Ctx<'a, 'f> {
         )
     }
 
+    /// Child context for an accent script: accents keep their size (no
+    /// script-level bump) so the mark stays as wide as its base.
+    fn accent_child(&self, cramped: bool) -> Self {
+        Ctx::derive(
+            self.font,
+            self.base_size,
+            self.script_level,
+            false,
+            self.cramped || cramped,
+        )
+    }
+
     /// Child context for a subscript or superscript: script level rises,
     /// displaystyle switches off. Subscripts are additionally cramped.
     fn script_child(&self, cramped: bool) -> Self {
@@ -263,6 +275,20 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
         Node::Scripts { base, sub, sup } => {
             layout_scripts(ctx, base, sub.as_deref(), sup.as_deref())
         }
+        Node::UnderOver {
+            base,
+            under,
+            over,
+            accent,
+            accent_under,
+        } => layout_underover(
+            ctx,
+            base,
+            under.as_deref(),
+            over.as_deref(),
+            accent.unwrap_or(false),
+            accent_under.unwrap_or(false),
+        ),
         Node::Sqrt(children) => {
             let content = layout_row(&ctx.cramped_child(), children);
             layout_radical(ctx, content, None)
@@ -395,13 +421,157 @@ fn layout_radical(ctx: &Ctx, content: MathBox, degree: Option<MathBox>) -> MathB
     out
 }
 
+/// `<munder>`/`<mover>`/`<munderover>`.
+///
+/// Movable limits render as sub/superscripts outside display style. Accented
+/// scripts keep full size and hug the base at AccentBaseHeight; limits over
+/// large operators use the Upper/LowerLimit constants; everything else uses
+/// the over/underbar gaps. Lone stretchy horizontal operators in any slot
+/// stretch to the widest slot's natural width.
+fn layout_underover(
+    ctx: &Ctx,
+    base: &Node,
+    under: Option<&Node>,
+    over: Option<&Node>,
+    accent: bool,
+    accent_under: bool,
+) -> MathBox {
+    let base_flags = core_operator(base)
+        .map(|(text, _)| dictionary_entry(text, Form::Infix).2)
+        .unwrap_or(0);
+    if !ctx.display_style {
+        let movable = core_operator(base).is_some_and(|(_, attrs)| {
+            attrs
+                .movablelimits
+                .unwrap_or(base_flags & opdict::MOVABLE_LIMITS != 0)
+        });
+        if movable {
+            return layout_scripts(ctx, base, under, over);
+        }
+    }
+
+    let base_box = layout_operator_base(ctx, base);
+    let over_ctx = if accent {
+        ctx.accent_child(false)
+    } else {
+        ctx.script_child(false)
+    };
+    let under_ctx = if accent_under {
+        ctx.accent_child(true)
+    } else {
+        ctx.script_child(true)
+    };
+    let over_box = over.map(|n| layout_node(&over_ctx, n));
+    let under_box = under.map(|n| layout_node(&under_ctx, n));
+
+    // Horizontal stretching to the widest slot.
+    let width = base_box
+        .width
+        .max(over_box.as_ref().map_or(0.0, |b| b.width))
+        .max(under_box.as_ref().map_or(0.0, |b| b.width));
+    let stretch_h = |ctx: &Ctx, node: &Node, natural: MathBox| -> MathBox {
+        if natural.width < width - 1e-3 {
+            if let Node::Operator { text, attrs } = node {
+                if let Some(c) = single_char(text) {
+                    let flags = dictionary_entry(text, Form::Infix).2;
+                    if attrs.stretchy.unwrap_or(flags & opdict::STRETCHY != 0)
+                        && flags & opdict::HORIZONTAL != 0
+                    {
+                        if let Some(g) = ctx.font.glyph_index(c) {
+                            let stretched =
+                                ctx.font.stretch_horizontal(g, width / ctx.scale);
+                            return layout_stretched_horizontal(ctx, &stretched);
+                        }
+                    }
+                }
+            }
+        }
+        natural
+    };
+    let base_box = stretch_h(ctx, base, base_box);
+    let over_box = over.map(|n| stretch_h(&over_ctx, n, over_box.expect("laid out above")));
+    let under_box =
+        under.map(|n| stretch_h(&under_ctx, n, under_box.expect("laid out above")));
+
+    let c = ctx.font.constants();
+    // Operators carrying limits use the limit constants; plain bases the bar
+    // constants.
+    let limits_base = base_flags & (opdict::LARGEOP | opdict::MOVABLE_LIMITS) != 0;
+
+    let mut out = MathBox::empty();
+    out.width = width;
+    out.ascent = base_box.ascent;
+    out.descent = base_box.descent;
+    let dx = (width - base_box.width) / 2.0;
+    for mut item in base_box.items {
+        item.translate(dx, 0.0);
+        out.items.push(item);
+    }
+
+    if let Some(ob) = over_box {
+        let (shift_up, extra_ascender) = if accent {
+            // The accent glyph is drawn for a base of AccentBaseHeight; raise
+            // it only by however much the base exceeds that.
+            (
+                (base_box.ascent - ctx.constant(c.accent_base_height())).max(0.0),
+                0.0,
+            )
+        } else if limits_base {
+            (
+                base_box.ascent
+                    + ctx
+                        .constant(c.upper_limit_baseline_rise_min())
+                        .max(ctx.constant(c.upper_limit_gap_min()) + ob.descent),
+                0.0,
+            )
+        } else {
+            (
+                base_box.ascent + ctx.constant(c.overbar_vertical_gap()) + ob.descent,
+                ctx.constant(c.overbar_extra_ascender()),
+            )
+        };
+        out.ascent = out.ascent.max(shift_up + ob.ascent + extra_ascender);
+        let dx = (width - ob.width) / 2.0;
+        for mut item in ob.items {
+            item.translate(dx, -shift_up);
+            out.items.push(item);
+        }
+    }
+
+    if let Some(ub) = under_box {
+        let (shift_down, extra_descender) = if accent_under {
+            ((base_box.descent + ub.ascent).max(0.0), 0.0)
+        } else if limits_base {
+            (
+                base_box.descent
+                    + ctx
+                        .constant(c.lower_limit_baseline_drop_min())
+                        .max(ctx.constant(c.lower_limit_gap_min()) + ub.ascent),
+                0.0,
+            )
+        } else {
+            (
+                base_box.descent + ctx.constant(c.underbar_vertical_gap()) + ub.ascent,
+                ctx.constant(c.underbar_extra_descender()),
+            )
+        };
+        out.descent = out.descent.max(shift_down + ub.descent + extra_descender);
+        let dx = (width - ub.width) / 2.0;
+        for mut item in ub.items {
+            item.translate(dx, shift_down);
+            out.items.push(item);
+        }
+    }
+    out
+}
+
 /// `<msub>`/`<msup>`/`<msubsup>` per the OpenType MATH script constants
 /// (the TeX Appendix G rules 18a–f recast in font terms).
 ///
 /// Italic correction of the base is not yet applied to the superscript
 /// offset; that lands together with per-glyph MathGlyphInfo access.
 fn layout_scripts(ctx: &Ctx, base: &Node, sub: Option<&Node>, sup: Option<&Node>) -> MathBox {
-    let base_box = layout_node(ctx, base);
+    let base_box = layout_operator_base(ctx, base);
     let sub_box = sub.map(|n| layout_node(&ctx.script_child(true), n));
     let sup_box = sup.map(|n| layout_node(&ctx.script_child(false), n));
 
@@ -641,8 +811,8 @@ fn emit_stretched(ctx: &Ctx, stretched: &Stretched, x: f32, top: f32, items: &mu
                 ctx.font.advance(*g) * ctx.scale,
             )
         }
-        Stretched::Assembly { parts, height } => {
-            let height = height * ctx.scale;
+        Stretched::Assembly { parts, extent } => {
+            let height = extent * ctx.scale;
             let bottom = top + height;
             let mut advance = 0.0_f32;
             for &(g, offset) in parts {
@@ -659,6 +829,70 @@ fn emit_stretched(ctx: &Ctx, stretched: &Stretched, x: f32, top: f32, items: &mu
             (height, advance)
         }
     }
+}
+
+/// Emit a horizontally-stretched glyph starting at `x` on the baseline,
+/// returning its box (width from the stretch axis, ascent/descent from ink).
+fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
+    let mut out = MathBox::empty();
+    match stretched {
+        Stretched::Glyph(g) => {
+            out.items.push(Item::Glyph {
+                id: *g,
+                x: 0.0,
+                y: 0.0,
+                size: ctx.size,
+            });
+            out.width = ctx.font.advance(*g) * ctx.scale;
+            if let Some(ink) = ctx.font.ink_box(*g) {
+                out.ascent = f32::from(ink.y_max) * ctx.scale;
+                out.descent = -f32::from(ink.y_min) * ctx.scale;
+            }
+        }
+        Stretched::Assembly { parts, extent } => {
+            out.width = extent * ctx.scale;
+            for &(g, offset) in parts {
+                out.items.push(Item::Glyph {
+                    id: g,
+                    x: offset * ctx.scale,
+                    y: 0.0,
+                    size: ctx.size,
+                });
+                if let Some(ink) = ctx.font.ink_box(g) {
+                    out.ascent = out.ascent.max(f32::from(ink.y_max) * ctx.scale);
+                    out.descent = out.descent.max(-f32::from(ink.y_min) * ctx.scale);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The core `<mo>` of an embellished operator: the node itself, or the base
+/// of scripts/under-over wrappers (MathML Core's embellished-operator
+/// definition, without the space-like-row cases).
+fn core_operator(node: &Node) -> Option<(&str, &crate::ast::OperatorAttrs)> {
+    match node {
+        Node::Operator { text, attrs } => Some((text, attrs)),
+        Node::Scripts { base, .. } | Node::UnderOver { base, .. } => core_operator(base),
+        _ => None,
+    }
+}
+
+/// Lay out a node that may be a lone large operator: in display style the
+/// base of scripts/limits picks its DisplayOperatorMinHeight variant.
+fn layout_operator_base(ctx: &Ctx, node: &Node) -> MathBox {
+    if let Node::Operator { text, attrs } = node {
+        if ctx.display_style {
+            if let Some(c) = single_char(text) {
+                let flags = dictionary_entry(text, Form::Infix).2;
+                if attrs.largeop.unwrap_or(flags & opdict::LARGEOP != 0) {
+                    return layout_large_operator(ctx, c);
+                }
+            }
+        }
+    }
+    layout_node(ctx, node)
 }
 
 /// A vertically-stretchy operator covering the row's extent: symmetric ones
