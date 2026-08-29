@@ -1,13 +1,28 @@
 //! Math font access: a thin wrapper over `ttf-parser` that guarantees the
 //! face carries an OpenType MATH table.
 
-pub use ttf_parser::GlyphId;
+/// A glyph index in the math font — the same 16-bit id the font's own
+/// tables use; `0` is `.notdef`.
+///
+/// This is formulary's own type (not a re-export of its font parser's), so
+/// internal parser upgrades are not breaking changes for consumers holding
+/// glyph ids. Pass `.0` to whatever rasterization API draws your glyphs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct GlyphId(pub u16);
+
+impl GlyphId {
+    /// The equivalent id in `ttf_parser`'s terms, for internal table access.
+    pub(crate) fn raw(self) -> ttf_parser::GlyphId {
+        ttf_parser::GlyphId(self.0)
+    }
+}
 
 /// Errors constructing a [`MathFont`].
 #[derive(Debug)]
 pub enum FontError {
-    /// The bytes are not a parseable OpenType/TrueType font.
-    Face(ttf_parser::FaceParsingError),
+    /// The bytes are not a parseable OpenType/TrueType font; the payload is
+    /// a human-readable description of the parse failure.
+    Face(String),
     /// The font parsed but has no MATH table; math layout is impossible
     /// without one.
     NoMathTable,
@@ -49,13 +64,20 @@ pub(crate) enum Stretched {
 /// A font validated to contain an OpenType MATH table.
 ///
 /// Borrows the caller's font bytes; the crate does no I/O.
+///
+/// `MathFont` is `Send`, `Sync`, and unwind-safe (`RefUnwindSafe`) — a
+/// guarantee, not an accident of the current fields: sharing one across
+/// threads or catching a layout panic around a `&MathFont` is supported.
+/// Its interior caches are all write-once, so a panic can't leave them
+/// torn. A compile-time assertion below pins this.
 pub struct MathFont<'a> {
     face: ttf_parser::Face<'a>,
     units_per_em: f32,
     /// Lazily-computed ink boxes, indexed by glyph id. `glyph_bounding_box`
     /// re-parses the outline (a CFF charstring walk in OTF fonts) on every
-    /// call, and layout asks per glyph placed.
-    ink_boxes: Vec<std::sync::OnceLock<Option<ttf_parser::Rect>>>,
+    /// call, and layout asks per glyph placed. The table itself is also
+    /// lazy, so constructing a font that never renders stays allocation-light.
+    ink_boxes: std::sync::OnceLock<Vec<std::sync::OnceLock<Option<ttf_parser::Rect>>>>,
     /// The GSUB `ssty` alternate subtables, resolved once so per-glyph
     /// script-alternate lookups don't rescan the feature list.
     ssty: Vec<ttf_parser::gsub::AlternateSubstitution<'a>>,
@@ -63,30 +85,58 @@ pub struct MathFont<'a> {
     shaper: Option<rustybuzz::Face<'a>>,
     /// Shape plans per script level (0, 1, 2+). Plan compilation walks the
     /// font's whole feature list and costs more than shaping a short run.
-    /// `AssertUnwindSafe` keeps `MathFont` unwind-safe despite the plan's
-    /// internal `dyn Any`; the cache is write-once, so a panic can't leave
-    /// it torn.
+    /// `AssertUnwindSafe` upholds the type's documented unwind-safety
+    /// despite the plan's internal `dyn Any`; the cache is write-once, so a
+    /// panic can't leave it torn.
     #[cfg(feature = "shaping")]
     plans: std::panic::AssertUnwindSafe<[std::sync::OnceLock<rustybuzz::ShapePlan>; 3]>,
 }
 
+// Pin the documented auto-trait guarantees: adding a field that silently
+// revoked any of these would be a breaking change consumers can't see in a
+// diff, so make it fail the build here instead.
+const _: () = {
+    const fn assert_auto_traits<
+        T: Send + Sync + std::panic::RefUnwindSafe + std::panic::UnwindSafe,
+    >() {
+    }
+    assert_auto_traits::<MathFont<'static>>();
+};
+
 impl<'a> MathFont<'a> {
+    /// Cheaply test whether `data` (face `index` for collections) carries a
+    /// MATH table with constants — the precondition [`MathFont::new`]
+    /// enforces — without constructing anything.
+    ///
+    /// Reads only the table directory and the MATH header, so it's suitable
+    /// for scanning font lists. `true` means the precondition holds;
+    /// construction can still fail if the font is malformed in other ways.
+    pub fn probe(data: &[u8], index: u32) -> bool {
+        let Ok(raw) = ttf_parser::RawFace::parse(data, index) else {
+            return false;
+        };
+        let Some(math) = raw.table(ttf_parser::Tag::from_bytes(b"MATH")) else {
+            return false;
+        };
+        // The same parse `new` performs via `Face`, so probe can't bless a
+        // MATH table construction would reject.
+        ttf_parser::math::Table::parse(math).is_some_and(|m| m.constants.is_some())
+    }
+
     /// Parse `data` (face `index` for collections, 0 otherwise) and verify a
     /// MATH table with constants is present.
     pub fn new(data: &'a [u8], index: u32) -> Result<Self, FontError> {
-        let face = ttf_parser::Face::parse(data, index).map_err(FontError::Face)?;
+        let face =
+            ttf_parser::Face::parse(data, index).map_err(|e| FontError::Face(e.to_string()))?;
         if face.tables().math.and_then(|m| m.constants).is_none() {
             return Err(FontError::NoMathTable);
         }
         let units_per_em = face.units_per_em() as f32;
-        let glyph_count = face.number_of_glyphs() as usize;
         let ssty = ssty_subtables(&face);
         Ok(MathFont {
             face,
             units_per_em,
-            ink_boxes: std::iter::repeat_with(std::sync::OnceLock::new)
-                .take(glyph_count)
-                .collect(),
+            ink_boxes: std::sync::OnceLock::new(),
             ssty,
             #[cfg(feature = "shaping")]
             shaper: rustybuzz::Face::from_slice(data, index),
@@ -143,19 +193,26 @@ impl<'a> MathFont<'a> {
     }
 
     pub(crate) fn glyph_index(&self, c: char) -> Option<GlyphId> {
-        self.face.glyph_index(c)
+        self.face.glyph_index(c).map(|g| GlyphId(g.0))
     }
 
     /// Horizontal advance in font design units.
     pub(crate) fn advance(&self, glyph: GlyphId) -> f32 {
-        self.face.glyph_hor_advance(glyph).unwrap_or(0) as f32
+        self.face.glyph_hor_advance(glyph.raw()).unwrap_or(0) as f32
     }
 
     /// Ink bounding box in font design units (y-up), if the glyph has outlines.
     pub(crate) fn ink_box(&self, glyph: GlyphId) -> Option<ttf_parser::Rect> {
-        match self.ink_boxes.get(usize::from(glyph.0)) {
-            Some(slot) => *slot.get_or_init(|| self.face.glyph_bounding_box(glyph)),
-            None => self.face.glyph_bounding_box(glyph),
+        let table = self.ink_boxes.get_or_init(|| {
+            std::iter::repeat_with(std::sync::OnceLock::new)
+                .take(usize::from(self.face.number_of_glyphs()))
+                .collect()
+        });
+        match table.get(usize::from(glyph.0)) {
+            Some(slot) => *slot.get_or_init(|| self.face.glyph_bounding_box(glyph.raw())),
+            // Out of range: a corrupt font's GSUB/MATH subtables can name
+            // glyph ids beyond the glyph count, so fall through uncached.
+            None => self.face.glyph_bounding_box(glyph.raw()),
         }
     }
 
@@ -181,12 +238,12 @@ impl<'a> MathFont<'a> {
         } else {
             variants.vertical_constructions
         };
-        let Some(construction) = constructions.get(glyph) else {
+        let Some(construction) = constructions.get(glyph.raw()) else {
             return Stretched::Glyph(glyph);
         };
         let mut best = glyph;
         for v in construction.variants {
-            best = v.variant_glyph;
+            best = GlyphId(v.variant_glyph.0);
             if f32::from(v.advance_measurement) >= target {
                 return Stretched::Glyph(best);
             }
@@ -238,7 +295,7 @@ impl<'a> MathFont<'a> {
             let mut parts = Vec::with_capacity(seq.len());
             let mut bottom = 0.0;
             for p in &seq {
-                parts.push((p.glyph_id, bottom));
+                parts.push((GlyphId(p.glyph_id.0), bottom));
                 bottom += f32::from(p.full_advance) - overlap;
             }
             let extent = bottom + overlap;
@@ -257,12 +314,15 @@ impl<'a> MathFont<'a> {
     pub(crate) fn script_alternate(&self, glyph: GlyphId, level: u16) -> Option<GlyphId> {
         debug_assert!(level >= 1);
         for alt in &self.ssty {
-            if let Some(idx) = alt.coverage.get(glyph) {
+            if let Some(idx) = alt.coverage.get(glyph.raw()) {
                 let set = alt.alternate_sets.get(idx)?;
                 // Deeper nesting takes the furthest available
                 // alternate (ssty1, then ssty2 when the font has it).
                 let last = set.alternates.len().checked_sub(1)?;
-                return set.alternates.get(level.saturating_sub(1).min(last));
+                return set
+                    .alternates
+                    .get(level.saturating_sub(1).min(last))
+                    .map(|g| GlyphId(g.0));
             }
         }
         None
@@ -277,7 +337,7 @@ impl<'a> MathFont<'a> {
             .math
             .and_then(|m| m.glyph_info)
             .and_then(|gi| gi.italic_corrections)
-            .and_then(|ic| ic.get(glyph))
+            .and_then(|ic| ic.get(glyph.raw()))
             .map_or(0.0, |v| f32::from(v.value))
     }
 
@@ -289,7 +349,7 @@ impl<'a> MathFont<'a> {
             .math
             .and_then(|m| m.glyph_info)
             .and_then(|gi| gi.top_accent_attachments)
-            .and_then(|t| t.get(glyph))
+            .and_then(|t| t.get(glyph.raw()))
             .map(|v| f32::from(v.value))
     }
 
@@ -305,7 +365,7 @@ impl<'a> MathFont<'a> {
             .math
             .and_then(|m| m.glyph_info)
             .and_then(|gi| gi.kern_infos)
-            .and_then(|k| k.get(glyph))
+            .and_then(|k| k.get(glyph.raw()))
         else {
             return 0.0;
         };

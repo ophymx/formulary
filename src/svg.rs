@@ -35,7 +35,7 @@ pub fn to_svg(layout: &Layout, font: &MathFont) -> String {
     );
     // Path data is per-glyph (position and scale live in the transform), so
     // outline each distinct glyph once per document.
-    let mut outlined: std::collections::HashMap<u16, Option<String>> =
+    let mut outlined: std::collections::HashMap<crate::GlyphId, Option<String>> =
         std::collections::HashMap::new();
     for item in &layout.items {
         match *item {
@@ -44,13 +44,14 @@ pub fn to_svg(layout: &Layout, font: &MathFont) -> String {
                 x,
                 y,
                 size,
+                advance,
                 color,
                 mirrored,
             } => {
-                let d = outlined.entry(id.0).or_insert_with(|| {
+                let d = outlined.entry(id).or_insert_with(|| {
                     let mut builder = PathBuilder::default();
                     font.face()
-                        .outline_glyph(id, &mut builder)
+                        .outline_glyph(id.raw(), &mut builder)
                         .map(|_| builder.d)
                 });
                 let Some(d) = d else {
@@ -60,8 +61,7 @@ pub fn to_svg(layout: &Layout, font: &MathFont) -> String {
                 // Mirrored glyphs flip about their advance box.
                 let s = size / font.units_per_em();
                 let (tx, sx) = if mirrored {
-                    let advance = font.face().glyph_hor_advance(id).unwrap_or(0);
-                    (x + f32::from(advance) * s, format!("-{}", fmt(s)))
+                    (x + advance, format!("-{}", fmt(s)))
                 } else {
                     (x, fmt(s))
                 };
@@ -132,21 +132,27 @@ fn fmt(v: f32) -> String {
     s
 }
 
+/// The straightforward formatting this module's fast path must match:
+/// `{v:.3}` with trailing zeros (and a bare sign) trimmed. Kept as the
+/// huge/non-finite fallback and as the oracle for the equivalence test.
+fn fmt_slow(v: f32) -> String {
+    let mut s = format!("{v:.3}");
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    if s == "-0" {
+        s = "0".to_string();
+    }
+    s
+}
+
 fn fmt_to(out: &mut String, v: f32) {
     let scaled = f64::from(v) * 1000.0;
     if scaled.is_nan() || scaled.abs() >= 9.0e15 {
-        // Huge or non-finite: take the slow exact path.
-        let mut s = format!("{v:.3}");
-        while s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
-        if s == "-0" {
-            s = "0".to_string();
-        }
-        out.push_str(&s);
+        out.push_str(&fmt_slow(v));
         return;
     }
     let n = scaled.round_ties_even() as i64;
@@ -218,31 +224,23 @@ mod tests {
     /// slow path byte-for-byte.
     #[test]
     fn fmt_matches_std_formatting() {
-        let reference = |v: f32| {
-            let mut s = format!("{v:.3}");
-            while s.ends_with('0') {
-                s.pop();
-            }
-            if s.ends_with('.') {
-                s.pop();
-            }
-            if s == "-0" {
-                s = "0".to_string();
-            }
-            s
-        };
         let mut cases: Vec<f32> = vec![0.0, -0.0, 0.0625, -0.0625, 1.5, -1.5, 0.0005, -0.0001];
         // Ties (multiples of 1/16) and a pseudo-random sweep.
-        for i in 0..20000 {
+        for i in 0..20000u32 {
             cases.push(i as f32 / 16.0);
             cases.push(-(i as f32) / 16.0);
-            let x = f32::from_bits(0x3800_0000u32.wrapping_add(i * 2_654_435_761));
+            let x = f32::from_bits(0x3800_0000u32.wrapping_add(i.wrapping_mul(2_654_435_761)));
             if x.is_finite() {
                 cases.push(x % 1.0e6);
             }
         }
         for v in cases {
-            assert_eq!(super::fmt(v), reference(v), "for {v} ({:x})", v.to_bits());
+            assert_eq!(
+                super::fmt(v),
+                super::fmt_slow(v),
+                "for {v} ({:x})",
+                v.to_bits()
+            );
         }
     }
 }
