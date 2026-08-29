@@ -57,10 +57,16 @@ pub enum Item {
         x: f32,
         y: f32,
         size: f32,
+        /// The glyph's nominal horizontal advance at `size`, in layout
+        /// units, so consumers don't need their own font access (positions
+        /// are already final: never add `advance` to place the next item).
+        /// In shaped runs the spacing baked into `x` can differ from this
+        /// nominal value.
+        advance: f32,
         color: Option<Color>,
-        /// Draw the glyph flipped horizontally about its advance box (used
-        /// for the radical in right-to-left math, where fonts rarely ship
-        /// pre-mirrored forms).
+        /// Draw the glyph flipped horizontally about its advance box —
+        /// mirror about `x + advance / 2` (used for the radical in
+        /// right-to-left math, where fonts rarely ship pre-mirrored forms).
         mirrored: bool,
     },
     /// A filled rectangle (fraction bars, radical rules, merror borders).
@@ -296,6 +302,21 @@ impl<'a, 'f> Ctx<'a, 'f> {
     /// context's scale.
     fn constant(&self, v: ttf_parser::math::MathValue) -> f32 {
         v.value as f32 * self.scale
+    }
+
+    /// A glyph display-list item at `(x, y)` in the current style: size,
+    /// color, and nominal advance all filled in from the context, so emit
+    /// sites can't drift apart on how those fields derive.
+    fn glyph_item(&self, id: GlyphId, x: f32, y: f32, mirrored: bool) -> Item {
+        Item::Glyph {
+            id,
+            x,
+            y,
+            size: self.size,
+            advance: self.font.advance(id) * self.scale,
+            color: self.color,
+            mirrored,
+        }
     }
 
     /// Swap in the font's `ssty` alternate in script styles.
@@ -1520,14 +1541,7 @@ fn directed_char(ctx: &Ctx, c: char) -> char {
 /// metrics a single-character text run would produce.
 fn natural_glyph_box(ctx: &Ctx, glyph: GlyphId) -> MathBox {
     let mut out = MathBox::empty();
-    out.items.push(Item::Glyph {
-        id: glyph,
-        x: 0.0,
-        y: 0.0,
-        size: ctx.size,
-        color: ctx.color,
-        mirrored: false,
-    });
+    out.items.push(ctx.glyph_item(glyph, 0.0, 0.0, false));
     out.width = ctx.font.advance(glyph) * ctx.scale;
     out.italic_correction = ctx.font.italic_correction(glyph) * ctx.scale;
     out.lone_glyph = Some(glyph);
@@ -1559,21 +1573,12 @@ fn emit_stretched(
 ) -> (f32, f32) {
     match stretched {
         Stretched::Glyph(g) => {
+            let advance = ctx.font.advance(*g) * ctx.scale;
             let Some(ink) = ctx.font.ink_box(*g) else {
-                return (0.0, ctx.font.advance(*g) * ctx.scale);
+                return (0.0, advance);
             };
-            items.push(Item::Glyph {
-                id: *g,
-                x,
-                y: top + f32::from(ink.y_max) * ctx.scale,
-                size: ctx.size,
-                color: ctx.color,
-                mirrored: mirror,
-            });
-            (
-                f32::from(ink.y_max - ink.y_min) * ctx.scale,
-                ctx.font.advance(*g) * ctx.scale,
-            )
+            items.push(ctx.glyph_item(*g, x, top + f32::from(ink.y_max) * ctx.scale, mirror));
+            (f32::from(ink.y_max - ink.y_min) * ctx.scale, advance)
         }
         Stretched::Assembly { parts, extent } => {
             let height = extent * ctx.scale;
@@ -1585,14 +1590,12 @@ fn emit_stretched(
                     continue;
                 };
                 // Part's ink bottom sits `offset` above the assembly bottom.
-                items.push(Item::Glyph {
-                    id: g,
+                items.push(ctx.glyph_item(
+                    g,
                     x,
-                    y: bottom - offset * ctx.scale + f32::from(ink.y_min) * ctx.scale,
-                    size: ctx.size,
-                    color: ctx.color,
-                    mirrored: mirror,
-                });
+                    bottom - offset * ctx.scale + f32::from(ink.y_min) * ctx.scale,
+                    mirror,
+                ));
             }
             (height, advance)
         }
@@ -1605,14 +1608,7 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
     let mut out = MathBox::empty();
     match stretched {
         Stretched::Glyph(g) => {
-            out.items.push(Item::Glyph {
-                id: *g,
-                x: 0.0,
-                y: 0.0,
-                size: ctx.size,
-                color: ctx.color,
-                mirrored: false,
-            });
+            out.items.push(ctx.glyph_item(*g, 0.0, 0.0, false));
             out.width = ctx.font.advance(*g) * ctx.scale;
             out.lone_glyph = Some(*g);
             if let Some(ink) = ctx.font.ink_box(*g) {
@@ -1623,14 +1619,8 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
         Stretched::Assembly { parts, extent } => {
             out.width = extent * ctx.scale;
             for &(g, offset) in parts {
-                out.items.push(Item::Glyph {
-                    id: g,
-                    x: offset * ctx.scale,
-                    y: 0.0,
-                    size: ctx.size,
-                    color: ctx.color,
-                    mirrored: false,
-                });
+                out.items
+                    .push(ctx.glyph_item(g, offset * ctx.scale, 0.0, false));
                 if let Some(ink) = ctx.font.ink_box(g) {
                     out.ascent = out.ascent.max(f32::from(ink.y_max) * ctx.scale);
                     out.descent = out.descent.max(-f32::from(ink.y_min) * ctx.scale);
@@ -1843,15 +1833,9 @@ fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
             continue;
         };
         let gid = ctx.script_glyph(gid);
-        out.items.push(Item::Glyph {
-            id: gid,
-            x: out.width,
-            y: 0.0,
-            size: ctx.size,
-            color: ctx.color,
-            mirrored: false,
-        });
-        out.width += ctx.font.advance(gid) * ctx.scale;
+        let advance = ctx.font.advance(gid) * ctx.scale;
+        out.items.push(ctx.glyph_item(gid, out.width, 0.0, false));
+        out.width += advance;
         out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
         if let Some(ink) = ctx.font.ink_box(gid) {
             out.ascent = out.ascent.max(ink.y_max as f32 * ctx.scale);
@@ -1903,14 +1887,7 @@ fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
         } else {
             ctx.font.advance(gid) * ctx.scale
         };
-        out.items.push(Item::Glyph {
-            id: gid,
-            x,
-            y,
-            size: ctx.size,
-            color: ctx.color,
-            mirrored: false,
-        });
+        out.items.push(ctx.glyph_item(gid, x, y, false));
         out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
         if let Some(ink) = ctx.font.ink_box(gid) {
             out.ascent = out.ascent.max(f32::from(ink.y_max) * ctx.scale - y);

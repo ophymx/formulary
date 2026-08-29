@@ -3,6 +3,11 @@
 //! Regenerate goldens with `UPDATE_GOLDEN=1 cargo test` and eyeball the SVG
 //! before committing; `tools/browser-compare.py` renders each golden next to
 //! a browser's rendering of the same markup for drift checks.
+//!
+//! The whole suite renders through `svg::to_svg`, so it requires the `svg`
+//! feature; `--no-default-features` builds still run the WPT corpus
+//! invariants.
+#![cfg(feature = "svg")]
 
 use formulary::{layout, parse, LayoutOptions, MathFont};
 

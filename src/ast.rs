@@ -160,6 +160,69 @@ pub struct MathRoot {
     pub warnings: Vec<Warning>,
 }
 
+impl MathRoot {
+    /// Whether any token content contains Arabic-script characters
+    /// (including the Arabic Mathematical Alphabetic Symbols block).
+    ///
+    /// Formulary lays out token text in logical order without Arabic
+    /// contextual shaping (joining forms) — RTL *structure* mirroring via
+    /// `dir` is supported, Arabic *text* is not. Consumers wanting correct
+    /// Arabic mathematical notation can gate a fallback renderer on this
+    /// instead of on `dir="rtl"` generally.
+    pub fn has_arabic_text(&self) -> bool {
+        self.children.iter().any(node_has_arabic_text)
+    }
+}
+
+/// Whether the subtree holds token text with Arabic-script characters.
+fn node_has_arabic_text(node: &Node) -> bool {
+    let is_arabic = |c: char| {
+        matches!(
+            u32::from(c),
+            0x0600..=0x06FF        // Arabic
+            | 0x0750..=0x077F      // Arabic Supplement
+            | 0x0870..=0x089F      // Arabic Extended-B
+            | 0x08A0..=0x08FF      // Arabic Extended-A
+            | 0xFB50..=0xFDFF      // Arabic Presentation Forms-A
+            | 0xFE70..=0xFEFF      // Arabic Presentation Forms-B
+            | 0x10E60..=0x10E7F    // Rumi Numeral Symbols
+            | 0x10EC0..=0x10EFF    // Arabic Extended-C
+            | 0x1EE00..=0x1EEFF // Arabic Mathematical Alphabetic Symbols
+        )
+    };
+    let any = |nodes: &[Node]| nodes.iter().any(node_has_arabic_text);
+    let boxed = |n: &Option<Box<Node>>| n.as_deref().is_some_and(node_has_arabic_text);
+    match node {
+        Node::Identifier(text) | Node::Number(text) | Node::Text(text) => {
+            text.chars().any(is_arabic)
+        }
+        Node::Operator { text, .. } => text.chars().any(is_arabic),
+        Node::Row(children)
+        | Node::Sqrt(children)
+        | Node::Phantom(children)
+        | Node::Styled { children, .. }
+        | Node::Padded { children, .. } => any(children),
+        Node::Frac { num, den, .. } => node_has_arabic_text(num) || node_has_arabic_text(den),
+        Node::Scripts { base, sub, sup } => node_has_arabic_text(base) || boxed(sub) || boxed(sup),
+        Node::MultiScripts { base, post, pre } => {
+            let pair = |p: &(Option<Node>, Option<Node>)| {
+                p.0.as_ref().is_some_and(node_has_arabic_text)
+                    || p.1.as_ref().is_some_and(node_has_arabic_text)
+            };
+            node_has_arabic_text(base) || post.iter().any(pair) || pre.iter().any(pair)
+        }
+        Node::Root { base, index } => node_has_arabic_text(base) || node_has_arabic_text(index),
+        Node::UnderOver {
+            base, under, over, ..
+        } => node_has_arabic_text(base) || boxed(under) || boxed(over),
+        Node::Table { rows, .. } => rows
+            .iter()
+            .flatten()
+            .any(|cell| node_has_arabic_text(&cell.content)),
+        Node::Space { .. } => false,
+    }
+}
+
 /// A recovered-from problem in the source markup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {

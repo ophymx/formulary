@@ -20,16 +20,20 @@ let laid = layout(&tree, &font, &LayoutOptions { font_size: 16.0 });
 
 ## Design
 
-- **Display list out, not pixels.** `Layout` holds glyph ids with positions
-  plus rules (fraction bars, radical overbars), all in the unit of the
-  `font_size` you passed. Baseline metrics (`ascent`/`descent`) are the
-  inline-integration contract. Re-run layout on size change — it's cheap.
+- **Display list out, not pixels.** `Layout` holds glyph ids with positions,
+  sizes, and nominal advances, plus rules (fraction bars, radical overbars),
+  all in the unit of the `font_size` you passed — everything a renderer
+  needs without re-opening the font. Baseline metrics (`ascent`/`descent`)
+  are the inline-integration contract. Re-run layout on size change — it's
+  cheap. `GlyphId` is formulary's own type (a bare `u16` index), so no
+  parser types leak into your API surface.
 - **The font drives the typography.** Fraction shifts, script positions,
   radical gaps, stretchy glyph variants and assemblies, italic corrections:
   all read from the font's MATH table, the same data browsers and TeX-family
   engines use. Any font with a MATH table works (STIX Two Math, Latin Modern
   Math, New Computer Modern, …); a font without one is rejected at
-  construction.
+  construction, and `MathFont::probe` answers the same question from just
+  the table directory, cheap enough to scan a font list.
 - **You bring the font bytes.** The core does no I/O and knows nothing about
   your rendering stack, so glyphs rasterize through whatever pipeline draws
   your body text and math matches it exactly.
@@ -65,10 +69,16 @@ attribute — mirrored rows, script sides, prescripts, table columns, and
 radicals (the surd renders with a `mirrored` display-list flag, since fonts
 rarely ship pre-mirrored forms), with paired delimiters swapped to their
 Unicode mirrors. Token content itself stays logical-order (no Arabic
-bidi/shaping yet).
+bidi/shaping): RTL *structure* is supported, Arabic *text* is not. Detect
+the unsupported case with `MathRoot::has_arabic_text()` — it flags
+Arabic-script characters (including the Arabic Mathematical Alphabetic
+Symbols block) anywhere in token content, so a consumer can gate a fallback
+renderer on exactly the formulas that need one instead of on `dir="rtl"`
+generally.
 
 Not (yet) supported: `menclose` (not in MathML Core), Arabic-script token
-content, content MathML, HTML inside token elements, linebreaking.
+content (see above), content MathML, HTML inside token elements,
+linebreaking.
 
 ### Error handling
 
