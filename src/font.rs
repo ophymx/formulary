@@ -52,8 +52,22 @@ pub(crate) enum Stretched {
 pub struct MathFont<'a> {
     face: ttf_parser::Face<'a>,
     units_per_em: f32,
+    /// Lazily-computed ink boxes, indexed by glyph id. `glyph_bounding_box`
+    /// re-parses the outline (a CFF charstring walk in OTF fonts) on every
+    /// call, and layout asks per glyph placed.
+    ink_boxes: Vec<std::sync::OnceLock<Option<ttf_parser::Rect>>>,
+    /// The GSUB `ssty` alternate subtables, resolved once so per-glyph
+    /// script-alternate lookups don't rescan the feature list.
+    ssty: Vec<ttf_parser::gsub::AlternateSubstitution<'a>>,
     #[cfg(feature = "shaping")]
     shaper: Option<rustybuzz::Face<'a>>,
+    /// Shape plans per script level (0, 1, 2+). Plan compilation walks the
+    /// font's whole feature list and costs more than shaping a short run.
+    /// `AssertUnwindSafe` keeps `MathFont` unwind-safe despite the plan's
+    /// internal `dyn Any`; the cache is write-once, so a panic can't leave
+    /// it torn.
+    #[cfg(feature = "shaping")]
+    plans: std::panic::AssertUnwindSafe<[std::sync::OnceLock<rustybuzz::ShapePlan>; 3]>,
 }
 
 impl<'a> MathFont<'a> {
@@ -65,17 +79,50 @@ impl<'a> MathFont<'a> {
             return Err(FontError::NoMathTable);
         }
         let units_per_em = face.units_per_em() as f32;
+        let glyph_count = face.number_of_glyphs() as usize;
+        let ssty = ssty_subtables(&face);
         Ok(MathFont {
             face,
             units_per_em,
+            ink_boxes: std::iter::repeat_with(std::sync::OnceLock::new)
+                .take(glyph_count)
+                .collect(),
+            ssty,
             #[cfg(feature = "shaping")]
             shaper: rustybuzz::Face::from_slice(data, index),
+            #[cfg(feature = "shaping")]
+            plans: std::panic::AssertUnwindSafe([const { std::sync::OnceLock::new() }; 3]),
         })
     }
 
     #[cfg(feature = "shaping")]
     pub(crate) fn shaper(&self) -> Option<&rustybuzz::Face<'a>> {
         self.shaper.as_ref()
+    }
+
+    /// The cached shape plan for a script level (LTR, `math` script, `ssty`
+    /// enabled at levels 1 and 2).
+    #[cfg(feature = "shaping")]
+    pub(crate) fn shape_plan(&self, script_level: u8) -> Option<&rustybuzz::ShapePlan> {
+        let shaper = self.shaper.as_ref()?;
+        let level = usize::from(script_level.min(2));
+        Some(self.plans[level].get_or_init(|| {
+            let mut features = Vec::new();
+            if level > 0 {
+                features.push(rustybuzz::Feature::new(
+                    rustybuzz::ttf_parser::Tag::from_bytes(b"ssty"),
+                    level as u32,
+                    ..,
+                ));
+            }
+            rustybuzz::ShapePlan::new(
+                shaper,
+                rustybuzz::Direction::LeftToRight,
+                Some(rustybuzz::script::SCRIPT_MATH),
+                None,
+                &features,
+            )
+        }))
     }
 
     pub fn units_per_em(&self) -> f32 {
@@ -106,7 +153,10 @@ impl<'a> MathFont<'a> {
 
     /// Ink bounding box in font design units (y-up), if the glyph has outlines.
     pub(crate) fn ink_box(&self, glyph: GlyphId) -> Option<ttf_parser::Rect> {
-        self.face.glyph_bounding_box(glyph)
+        match self.ink_boxes.get(usize::from(glyph.0)) {
+            Some(slot) => *slot.get_or_init(|| self.face.glyph_bounding_box(glyph)),
+            None => self.face.glyph_bounding_box(glyph),
+        }
     }
 
     /// A glyph stretched vertically to at least `target` design units.
@@ -206,25 +256,13 @@ impl<'a> MathFont<'a> {
     /// `Zmth` to `zmth` instead of HarfBuzz's special-cased `math`.
     pub(crate) fn script_alternate(&self, glyph: GlyphId, level: u16) -> Option<GlyphId> {
         debug_assert!(level >= 1);
-        let gsub = self.face.tables().gsub?;
-        let feature = gsub.features.find(ttf_parser::Tag::from_bytes(b"ssty"))?;
-        for li in feature.lookup_indices {
-            let Some(lookup) = gsub.lookups.get(li) else {
-                continue;
-            };
-            for sub in lookup
-                .subtables
-                .into_iter::<ttf_parser::gsub::SubstitutionSubtable>()
-            {
-                if let ttf_parser::gsub::SubstitutionSubtable::Alternate(alt) = sub {
-                    if let Some(idx) = alt.coverage.get(glyph) {
-                        let set = alt.alternate_sets.get(idx)?;
-                        // Deeper nesting takes the furthest available
-                        // alternate (ssty1, then ssty2 when the font has it).
-                        let last = set.alternates.len().checked_sub(1)?;
-                        return set.alternates.get(level.saturating_sub(1).min(last));
-                    }
-                }
+        for alt in &self.ssty {
+            if let Some(idx) = alt.coverage.get(glyph) {
+                let set = alt.alternate_sets.get(idx)?;
+                // Deeper nesting takes the furthest available
+                // alternate (ssty1, then ssty2 when the font has it).
+                let last = set.alternates.len().checked_sub(1)?;
+                return set.alternates.get(level.saturating_sub(1).min(last));
             }
         }
         None
@@ -304,4 +342,32 @@ impl<'a> MathFont<'a> {
     pub(crate) fn line_metrics(&self) -> (f32, f32) {
         (self.face.ascender() as f32, -(self.face.descender() as f32))
     }
+}
+
+/// The alternate-substitution subtables reachable from the GSUB `ssty`
+/// feature, in feature order.
+fn ssty_subtables<'a>(
+    face: &ttf_parser::Face<'a>,
+) -> Vec<ttf_parser::gsub::AlternateSubstitution<'a>> {
+    let mut out = Vec::new();
+    let Some(gsub) = face.tables().gsub else {
+        return out;
+    };
+    let Some(feature) = gsub.features.find(ttf_parser::Tag::from_bytes(b"ssty")) else {
+        return out;
+    };
+    for li in feature.lookup_indices {
+        let Some(lookup) = gsub.lookups.get(li) else {
+            continue;
+        };
+        for sub in lookup
+            .subtables
+            .into_iter::<ttf_parser::gsub::SubstitutionSubtable>()
+        {
+            if let ttf_parser::gsub::SubstitutionSubtable::Alternate(alt) = sub {
+                out.push(alt);
+            }
+        }
+    }
+    out
 }

@@ -1879,15 +1879,11 @@ fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
     // Select the OpenType `math` script: math fonts register ssty/dtls there,
     // and Common-script characters would otherwise resolve to DFLT.
     buffer.set_script(rustybuzz::script::SCRIPT_MATH);
-    let mut features = Vec::new();
-    if ctx.script_level > 0 {
-        features.push(rustybuzz::Feature::new(
-            rustybuzz::ttf_parser::Tag::from_bytes(b"ssty"),
-            u32::from(ctx.script_level.min(2)),
-            ..,
-        ));
-    }
-    let shaped = rustybuzz::shape(shaper, &features, buffer);
+    // Plans (which enable `ssty` at script levels) are cached on the font:
+    // compiling one walks the entire feature list, which dwarfs the actual
+    // shaping cost of a short run.
+    let plan = ctx.font.shape_plan(ctx.script_level)?;
+    let shaped = rustybuzz::shape_with_plan(shaper, plan, buffer);
 
     let mut out = MathBox::empty();
     for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
