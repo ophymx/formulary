@@ -42,10 +42,12 @@ let laid = layout(&tree, &font, &LayoutOptions { font_size: 16.0 });
 
 | feature   | default | effect |
 |-----------|---------|--------|
-| `shaping` | yes     | token runs shaped with rustybuzz (kerning, script alternates) |
+| `shaping` | yes     | token runs shaped with harfrust (kerning, script alternates) |
 | `svg`     | yes     | `svg::to_svg` — self-contained SVG with glyphs outlined to paths; the debugging window and golden-test format |
 
-With both off, the only dependencies are `ttf-parser` and `roxmltree`.
+With both off, the only dependencies are `read-fonts`, `skrifa` and `roxmltree`.
+All font access goes through the one `read-fonts` parser (harfrust shares it),
+so enabling `shaping` adds no second copy of any table.
 
 ## Coverage
 

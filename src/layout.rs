@@ -300,7 +300,7 @@ impl<'a, 'f> Ctx<'a, 'f> {
 
     /// A MATH constant, converted from design units to output units at this
     /// context's scale.
-    fn constant(&self, v: ttf_parser::math::MathValue) -> f32 {
+    fn constant(&self, v: crate::math::MathValue) -> f32 {
         v.value as f32 * self.scale
     }
 
@@ -1546,8 +1546,8 @@ fn natural_glyph_box(ctx: &Ctx, glyph: GlyphId) -> MathBox {
     out.italic_correction = ctx.font.italic_correction(glyph) * ctx.scale;
     out.lone_glyph = Some(glyph);
     if let Some(ink) = ctx.font.ink_box(glyph) {
-        out.ascent = f32::from(ink.y_max) * ctx.scale;
-        out.descent = -f32::from(ink.y_min) * ctx.scale;
+        out.ascent = ink.y_max * ctx.scale;
+        out.descent = -ink.y_min * ctx.scale;
     }
     out
 }
@@ -1577,8 +1577,8 @@ fn emit_stretched(
             let Some(ink) = ctx.font.ink_box(*g) else {
                 return (0.0, advance);
             };
-            items.push(ctx.glyph_item(*g, x, top + f32::from(ink.y_max) * ctx.scale, mirror));
-            (f32::from(ink.y_max - ink.y_min) * ctx.scale, advance)
+            items.push(ctx.glyph_item(*g, x, top + ink.y_max * ctx.scale, mirror));
+            ((ink.y_max - ink.y_min) * ctx.scale, advance)
         }
         Stretched::Assembly { parts, extent } => {
             let height = extent * ctx.scale;
@@ -1593,7 +1593,7 @@ fn emit_stretched(
                 items.push(ctx.glyph_item(
                     g,
                     x,
-                    bottom - offset * ctx.scale + f32::from(ink.y_min) * ctx.scale,
+                    bottom - offset * ctx.scale + ink.y_min * ctx.scale,
                     mirror,
                 ));
             }
@@ -1612,8 +1612,8 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
             out.width = ctx.font.advance(*g) * ctx.scale;
             out.lone_glyph = Some(*g);
             if let Some(ink) = ctx.font.ink_box(*g) {
-                out.ascent = f32::from(ink.y_max) * ctx.scale;
-                out.descent = -f32::from(ink.y_min) * ctx.scale;
+                out.ascent = ink.y_max * ctx.scale;
+                out.descent = -ink.y_min * ctx.scale;
             }
         }
         Stretched::Assembly { parts, extent } => {
@@ -1622,8 +1622,8 @@ fn layout_stretched_horizontal(ctx: &Ctx, stretched: &Stretched) -> MathBox {
                 out.items
                     .push(ctx.glyph_item(g, offset * ctx.scale, 0.0, false));
                 if let Some(ink) = ctx.font.ink_box(g) {
-                    out.ascent = out.ascent.max(f32::from(ink.y_max) * ctx.scale);
-                    out.descent = out.descent.max(-f32::from(ink.y_min) * ctx.scale);
+                    out.ascent = out.ascent.max(ink.y_max * ctx.scale);
+                    out.descent = out.descent.max(-ink.y_min * ctx.scale);
                 }
             }
         }
@@ -1705,7 +1705,7 @@ fn layout_stretchy_operator(
         let natural = ctx
             .font
             .ink_box(glyph)
-            .map_or(0.0, |ink| f32::from(ink.y_max - ink.y_min) * ctx.scale);
+            .map_or(0.0, |ink| (ink.y_max - ink.y_min) * ctx.scale);
         let clamped = target
             .max(minsize.map_or(0.0, |l| ctx.resolve(l, natural)))
             .min(maxsize.map_or(f32::INFINITY, |l| ctx.resolve(l, natural)))
@@ -1816,15 +1816,24 @@ fn dictionary_entry(text: &str, form: Form) -> (u8, u8, u8) {
     (5, 5, 0)
 }
 
-/// A run of token text: shaped with rustybuzz when the `shaping` feature is
+/// A run of token text: shaped with harfrust when the `shaping` feature is
 /// on (kerning, `ssty` script alternates), otherwise per-character cmap
 /// lookup + advances — adequate for isolated math glyphs, which don't form
 /// clusters or ligate.
 fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
     #[cfg(feature = "shaping")]
-    if let Some(b) = shape_text_run(ctx, text) {
-        return b;
+    {
+        shape_text_run(ctx, text)
     }
+    #[cfg(not(feature = "shaping"))]
+    {
+        layout_text_run_unshaped(ctx, text)
+    }
+}
+
+/// Per-character placement for the non-shaping build.
+#[cfg(not(feature = "shaping"))]
+fn layout_text_run_unshaped(ctx: &Ctx, text: &str) -> MathBox {
     let mut out = MathBox::empty();
     for c in text.chars() {
         let c = directed_char(ctx, c);
@@ -1838,19 +1847,18 @@ fn layout_text_run(ctx: &Ctx, text: &str) -> MathBox {
         out.width += advance;
         out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
         if let Some(ink) = ctx.font.ink_box(gid) {
-            out.ascent = out.ascent.max(ink.y_max as f32 * ctx.scale);
-            out.descent = out.descent.max(-(ink.y_min as f32) * ctx.scale);
+            out.ascent = out.ascent.max(ink.y_max * ctx.scale);
+            out.descent = out.descent.max(-ink.y_min * ctx.scale);
         }
     }
     finish_text_run(ctx, out)
 }
 
-/// Shape a run with rustybuzz. `ssty` is enabled in script styles so fonts
+/// Shape a run with harfrust. `ssty` is enabled in script styles so fonts
 /// can swap in script-tuned alternates (primes being the classic case).
 #[cfg(feature = "shaping")]
-fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
-    let shaper = ctx.font.shaper()?;
-    let mut buffer = rustybuzz::UnicodeBuffer::new();
+fn shape_text_run(ctx: &Ctx, text: &str) -> MathBox {
+    let mut buffer = harfrust::UnicodeBuffer::new();
     let mirrored: String;
     let text = if ctx.rtl {
         mirrored = text.chars().map(|c| directed_char(ctx, c)).collect();
@@ -1859,15 +1867,18 @@ fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
         text
     };
     buffer.push_str(text);
-    buffer.set_direction(rustybuzz::Direction::LeftToRight);
-    // Select the OpenType `math` script: math fonts register ssty/dtls there,
-    // and Common-script characters would otherwise resolve to DFLT.
-    buffer.set_script(rustybuzz::script::SCRIPT_MATH);
+    buffer.set_direction(harfrust::Direction::LeftToRight);
+    // Common resolves to the DFLT script; see `MathFont::shape_plan` for why
+    // not the OpenType `math` script.
+    buffer.set_script(harfrust::script::COMMON);
     // Plans (which enable `ssty` at script levels) are cached on the font:
     // compiling one walks the entire feature list, which dwarfs the actual
     // shaping cost of a short run.
-    let plan = ctx.font.shape_plan(ctx.script_level)?;
-    let shaped = rustybuzz::shape_with_plan(shaper, plan, buffer);
+    let plan = ctx.font.shape_plan(ctx.script_level);
+    let shaped = ctx
+        .font
+        .shaper()
+        .shape(buffer, harfrust::ShapeOptions::new().plan(Some(plan)));
 
     let mut out = MathBox::empty();
     for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
@@ -1890,11 +1901,11 @@ fn shape_text_run(ctx: &Ctx, text: &str) -> Option<MathBox> {
         out.items.push(ctx.glyph_item(gid, x, y, false));
         out.italic_correction = ctx.font.italic_correction(gid) * ctx.scale;
         if let Some(ink) = ctx.font.ink_box(gid) {
-            out.ascent = out.ascent.max(f32::from(ink.y_max) * ctx.scale - y);
-            out.descent = out.descent.max(y - f32::from(ink.y_min) * ctx.scale);
+            out.ascent = out.ascent.max(ink.y_max * ctx.scale - y);
+            out.descent = out.descent.max(y - ink.y_min * ctx.scale);
         }
     }
-    Some(finish_text_run(ctx, out))
+    finish_text_run(ctx, out)
 }
 
 /// A run with no ink (all spaces) still occupies the line: fall back to

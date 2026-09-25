@@ -50,9 +50,7 @@ pub fn to_svg(layout: &Layout, font: &MathFont) -> String {
             } => {
                 let d = outlined.entry(id).or_insert_with(|| {
                     let mut builder = PathBuilder::default();
-                    font.face()
-                        .outline_glyph(id.raw(), &mut builder)
-                        .map(|_| builder.d)
+                    (font.outline(id, &mut builder) && !builder.d.is_empty()).then_some(builder.d)
                 });
                 let Some(d) = d else {
                     continue; // blank glyph (e.g. space)
@@ -182,7 +180,7 @@ struct PathBuilder {
     d: String,
 }
 
-impl ttf_parser::OutlineBuilder for PathBuilder {
+impl skrifa::outline::OutlinePen for PathBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
         self.d.push('M');
         fmt_to(&mut self.d, x);
