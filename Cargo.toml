@@ -16,14 +16,18 @@ exclude = ["third_party"]
 
 [dependencies]
 roxmltree = "0.21"
-ttf-parser = "0.25"
-rustybuzz = { version = "0.20", optional = true }
+# read-fonts is the one font parser: skrifa (metrics, outlines) and harfrust
+# (shaping) both sit on it, so every table is parsed exactly once. Pinned to
+# the minor harfrust depends on so the tree carries a single copy.
+read-fonts = "0.43.3"
+skrifa = { version = "0.46", default-features = false, features = ["std"] }
+harfrust = { version = "0.13", optional = true }
 
 [features]
 default = ["svg", "shaping"]
 # SVG emission (debugging window and golden-test format). Core stays display-list only.
 svg = []
-# Text shaping via rustybuzz: kerning in multi-character token runs and the
+# Text shaping via harfrust: kerning in multi-character token runs and the
 # `ssty` script-alternates feature. Without it, glyphs are placed by plain
 # cmap lookup + advances (correct for isolated math glyphs).
-shaping = ["dep:rustybuzz"]
+shaping = ["dep:harfrust"]

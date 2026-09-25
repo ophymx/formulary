@@ -25,6 +25,7 @@
 pub mod ast;
 mod font;
 mod layout;
+mod math;
 mod mathvariant;
 mod opdict;
 mod parse;
