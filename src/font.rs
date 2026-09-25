@@ -368,38 +368,42 @@ impl<'a> MathFont<'a> {
     pub(crate) fn script_alternate(&self, glyph: GlyphId, level: u16) -> Option<GlyphId> {
         debug_assert!(level >= 1);
         for alt in &self.ssty {
-            if let Some(idx) = alt.coverage().ok()?.get(glyph.raw()) {
-                let set = alt.alternate_sets().get(usize::from(idx)).ok()?;
-                let alternates = set.alternate_glyph_ids();
-                // Deeper nesting takes the furthest available
-                // alternate (ssty1, then ssty2 when the font has it).
-                let last = alternates.len().checked_sub(1)?;
-                return alternates
-                    .get(usize::from(level.saturating_sub(1)).min(last))
-                    .map(|g| g.get().into());
-            }
+            // A malformed subtable is skipped, not allowed to hide the rest.
+            let Some(idx) = alt.coverage().ok().and_then(|c| c.get(glyph.raw())) else {
+                continue;
+            };
+            let Ok(set) = alt.alternate_sets().get(usize::from(idx)) else {
+                continue;
+            };
+            let alternates = set.alternate_glyph_ids();
+            // Deeper nesting takes the furthest available
+            // alternate (ssty1, then ssty2 when the font has it).
+            let Some(last) = alternates.len().checked_sub(1) else {
+                continue;
+            };
+            return alternates
+                .get(usize::from(level.saturating_sub(1)).min(last))
+                .map(|g| g.get().into());
         }
         None
-    }
-
-    fn glyph_info(&self, glyph: GlyphId) -> Option<(&math::MathGlyphInfo<'a>, GlyphId16)> {
-        Some((self.math.glyph_info()?, glyph.raw()))
     }
 
     /// Italic correction of a glyph in design units (0 when absent): how far
     /// the glyph's ink slants past its advance, used to attach superscripts
     /// (add) and subscripts (subtract) around slanted glyphs.
     pub(crate) fn italic_correction(&self, glyph: GlyphId) -> f32 {
-        self.glyph_info(glyph)
-            .and_then(|(gi, g)| gi.italics_correction()?.get(g))
+        self.math
+            .glyph_info()
+            .and_then(|gi| gi.italics_correction()?.get(glyph.raw()))
             .map_or(0.0, |v| f32::from(v.value))
     }
 
     /// The font's preferred horizontal accent position for `glyph`, in
     /// design units from the glyph origin, when the MATH table provides one.
     pub(crate) fn top_accent_attachment(&self, glyph: GlyphId) -> Option<f32> {
-        self.glyph_info(glyph)
-            .and_then(|(gi, g)| gi.top_accent_attachment()?.get(g))
+        self.math
+            .glyph_info()
+            .and_then(|gi| gi.top_accent_attachment()?.get(glyph.raw()))
             .map(|v| f32::from(v.value))
     }
 
@@ -410,8 +414,9 @@ impl<'a> MathFont<'a> {
     /// with `kern[count]` above the last step.
     pub(crate) fn math_kern(&self, glyph: GlyphId, corner: KernCorner, height: f32) -> f32 {
         let Some(kern) = self
-            .glyph_info(glyph)
-            .and_then(|(gi, g)| gi.kern_info()?.get(g, corner))
+            .math
+            .glyph_info()
+            .and_then(|gi| gi.kern_info()?.get(glyph.raw(), corner))
         else {
             return 0.0;
         };
