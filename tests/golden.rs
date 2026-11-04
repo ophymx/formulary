@@ -851,6 +851,36 @@ fn golden_matrix() {
 }
 
 #[test]
+fn mtable_displaystyle_reaches_cells() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let frac = "<mtr><mtd><mfrac><mn>1</mn><mn>2</mn></mfrac></mtd></mtr>";
+    let sizes = |markup: String| -> Vec<f32> {
+        glyphs(&layout(&parse(&markup).unwrap(), &font, &opts))
+            .iter()
+            .map(|g| g.2)
+            .collect()
+    };
+    // Cells are in text style even in display math (fraction parts at
+    // script size), unless the mtable itself says displaystyle="true"
+    // (WPT's displaystyle-1).
+    let default = sizes(format!(
+        r#"<math display="block"><mtable>{frac}</mtable></math>"#
+    ));
+    assert!(default.iter().all(|&s| s < 16.0));
+    let set = sizes(format!(
+        r#"<math><mtable displaystyle="true">{frac}</mtable></math>"#
+    ));
+    assert!(set.iter().all(|&s| (s - 16.0).abs() < 1e-6));
+    // An mstyle around the mtable doesn't reach past it.
+    let around = sizes(format!(
+        r#"<math><mstyle displaystyle="true"><mtable>{frac}</mtable></mstyle></math>"#
+    ));
+    assert_eq!(around, default);
+}
+
+#[test]
 fn mtable_geometry_sane() {
     let data = stix();
     let font = MathFont::new(&data, 0).unwrap();
