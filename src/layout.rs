@@ -683,6 +683,18 @@ fn layout_table(ctx: &Ctx, rows: &[Vec<TableCell>], column_align: &[ColumnAlign]
     out
 }
 
+/// How far a box's bottom reaches below its baseline (negative when it
+/// floats above it). Text runs report a descent of at least zero, so for a
+/// lone glyph its ink is used.
+fn ink_descent(ctx: &Ctx, b: &MathBox) -> f32 {
+    if let [Item::Glyph { id, y, size, .. }] = b.items.as_slice() {
+        if let Some(ink) = ctx.font.ink_box(*id) {
+            return y - ink.y_min * size / ctx.font.units_per_em();
+        }
+    }
+    b.descent
+}
+
 const RADICAL_CHAR: char = '\u{221A}';
 
 /// `<msqrt>`/`<mroot>` per the OpenType MATH radical constants: the radical
@@ -881,10 +893,16 @@ fn layout_underover(
 
     if let Some(ob) = over_box {
         let (shift_up, extra_ascender) = if accent {
-            // The accent glyph is drawn for a base of AccentBaseHeight; raise
-            // it only by however much the base exceeds that.
+            // An accent glyph is drawn for a base of AccentBaseHeight; raise
+            // it only by however much the base exceeds that. Core's general
+            // rule also holds for anything else used as an accent (arrows,
+            // a stretched low line, an mspace): its bottom is at least
+            // AccentBaseHeight above the baseline and clears the base.
+            let accent_base_height = ctx.constant(c.accent_base_height());
             (
-                (base_box.ascent - ctx.constant(c.accent_base_height())).max(0.0),
+                (base_box.ascent - accent_base_height)
+                    .max(0.0)
+                    .max(base_box.ascent.max(accent_base_height) + ink_descent(ctx, &ob)),
                 0.0,
             )
         } else if limits_base {
