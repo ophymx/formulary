@@ -742,6 +742,38 @@ fn horizontal_arrow_stretches_over_base() {
 }
 
 #[test]
+fn embellished_and_dictionary_less_operators_stretch() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    let ids = |markup: &str| -> Vec<u16> {
+        layout(&parse(markup).unwrap(), &font, &opts)
+            .items
+            .iter()
+            .filter_map(|i| match *i {
+                formulary::Item::Glyph { id, .. } => Some(id.0),
+                _ => None,
+            })
+            .collect()
+    };
+    // Each pair differs only in stretchy="false": the stretched one must
+    // pick a different glyph or an assembly.
+    let pairs = [
+        // U+0332 has an inline stretch axis but no dictionary entry.
+        r#"<math><munder accentunder="true"><mrow><mi>x</mi><mi>y</mi><mi>z</mi></mrow><mo{}>&#x332;</mo></munder></math>"#,
+        // An embellished overscript (keeping its size) stretches like a bare one.
+        r#"<math><mover><mrow><mi>a</mi><mi>b</mi><mi>c</mi><mi>d</mi></mrow><mstyle scriptlevel="0"><mo{}>&#x2192;</mo></mstyle></mover></math>"#,
+        // So does a styled fence in a row.
+        r#"<math><mstyle mathcolor="red"><mo{}>(</mo></mstyle><mfrac><mn>1</mn><mn>2</mn></mfrac></math>"#,
+    ];
+    for markup in pairs {
+        let stretched = ids(&markup.replace("{}", r#" stretchy="true""#));
+        let natural = ids(&markup.replace("{}", r#" stretchy="false""#));
+        assert_ne!(stretched, natural, "{markup}");
+    }
+}
+
+#[test]
 fn golden_integral_bounds() {
     check_golden(
         "integral_bounds",

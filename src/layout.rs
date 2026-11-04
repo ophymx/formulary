@@ -836,18 +836,8 @@ fn layout_underover(
         .max(under_box.as_ref().map_or(0.0, |b| b.width));
     let stretch_h = |ctx: &Ctx, node: &Node, natural: MathBox| -> MathBox {
         if natural.width < width - 1e-3 {
-            if let Node::Operator { text, attrs } = node {
-                if let Some(c) = single_char(text) {
-                    let flags = dictionary_entry(text, Form::Infix).2;
-                    if attrs.stretchy.unwrap_or(flags & opdict::STRETCHY != 0)
-                        && flags & opdict::HORIZONTAL != 0
-                    {
-                        if let Some(g) = ctx.font.glyph_index(c) {
-                            let stretched = ctx.font.stretch_horizontal(g, width / ctx.scale);
-                            return layout_stretched_horizontal(ctx, &stretched);
-                        }
-                    }
-                }
+            if let Some(stretched) = layout_embellished_stretchy_h(ctx, node, width) {
+                return stretched;
             }
         }
         natural
@@ -1370,10 +1360,8 @@ fn layout_row(ctx: &Ctx, children: &[Node]) -> MathBox {
                 .rspace
                 .map_or(f32::from(dict_r) * em, |l| ctx.resolve(l, 0.0).max(0.0));
             let stretchy = attrs.stretchy.unwrap_or(flags & opdict::STRETCHY != 0)
-                && flags & opdict::HORIZONTAL == 0
                 && single_char(text)
-                    .and_then(|c| ctx.font.glyph_index(c))
-                    .is_some();
+                    .is_some_and(|c| !inline_axis(c, flags) && ctx.font.glyph_index(c).is_some());
             if stretchy {
                 let symmetric = attrs.symmetric.unwrap_or(flags & opdict::SYMMETRIC != 0);
                 (
@@ -1490,6 +1478,9 @@ fn layout_embellished_stretchy(
             }
             None => layout_node(ctx, node),
         },
+        Node::Row(children) if children.len() == 1 => {
+            layout_embellished_stretchy(ctx, &children[0], symmetric, max_ascent, max_descent)
+        }
         Node::Scripts { base, sub, sup } => {
             let base_box =
                 layout_embellished_stretchy(ctx, base, symmetric, max_ascent, max_descent);
@@ -1497,6 +1488,43 @@ fn layout_embellished_stretchy(
         }
         _ => layout_node(ctx, node),
     }
+}
+
+/// Stretch the core of an embellished operator to `width` along the inline
+/// axis (an under/overscript or base of `munder`/`mover`), re-wrapping it in
+/// its style scopes. `None` if `node` isn't an inline-stretchy embellished
+/// operator.
+fn layout_embellished_stretchy_h(ctx: &Ctx, node: &Node, width: f32) -> Option<MathBox> {
+    match node {
+        Node::Operator { text, attrs } => {
+            let c = single_char(text)?;
+            let flags = dictionary_entry(text, Form::Infix).2;
+            if !(attrs.stretchy.unwrap_or(flags & opdict::STRETCHY != 0) && inline_axis(c, flags)) {
+                return None;
+            }
+            let g = ctx.font.glyph_index(c)?;
+            let stretched = ctx.font.stretch_horizontal(g, width / ctx.scale);
+            Some(layout_stretched_horizontal(ctx, &stretched))
+        }
+        Node::Row(children) if children.len() == 1 => {
+            layout_embellished_stretchy_h(ctx, &children[0], width)
+        }
+        Node::Styled { styles, children } if children.len() == 1 => {
+            let inner = ctx.styled_child(styles);
+            layout_embellished_stretchy_h(&inner, &children[0], width).map(|b| decorate(styles, b))
+        }
+        _ => None,
+    }
+}
+
+/// Whether `c` stretches along the inline axis (MathML Core's intrinsic
+/// stretch axis). The dictionary flags every listed character it has an
+/// entry for; these have none, so `<mo stretchy="true">&#x332;</mo>` would
+/// otherwise never stretch horizontally.
+fn inline_axis(c: char, flags: u8) -> bool {
+    const WITHOUT_ENTRY: &str = "\u{0332}\u{20D0}\u{20D1}\u{20D6}\u{20D7}\u{20E1}\u{2500}\
+        \u{FE35}\u{FE36}\u{FE37}\u{FE38}\u{1EEF0}\u{1EEF1}";
+    flags & opdict::HORIZONTAL != 0 || WITHOUT_ENTRY.contains(c)
 }
 
 /// Unicode bidi-mirrored counterpart for RTL rendering of paired
