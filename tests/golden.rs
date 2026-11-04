@@ -715,6 +715,44 @@ fn accents_keep_size_and_position() {
 }
 
 #[test]
+fn accent_overscripts_clear_the_base() {
+    let data = stix();
+    let font = MathFont::new(&data, 0).unwrap();
+    let opts = LayoutOptions { font_size: 16.0 };
+    // Anything used as an accent sits on top of the base (Core; WPT's
+    // underover-parameters-3), not where an accent glyph's own design
+    // would put it.
+    for base in ["<mi>x</mi>", "<mrow><mi>A</mi><mi>B</mi></mrow>"] {
+        let bare = layout(
+            &parse(&format!("<math>{base}</math>")).unwrap(),
+            &font,
+            &opts,
+        );
+        let laid = layout(
+            &parse(&format!(
+                r#"<math><mover accent="true">{base}<mspace width="1em" height="0.2em" mathbackground="red"/></mover></math>"#
+            ))
+            .unwrap(),
+            &font,
+            &opts,
+        );
+        let bottom = laid
+            .items
+            .iter()
+            .find_map(|i| match *i {
+                formulary::Item::Background { y, h, .. } => Some(y + h),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            bottom <= -bare.ascent + 1e-3,
+            "{base}: {bottom} vs {}",
+            bare.ascent
+        );
+    }
+}
+
+#[test]
 fn horizontal_arrow_stretches_over_base() {
     let data = stix();
     let font = MathFont::new(&data, 0).unwrap();
