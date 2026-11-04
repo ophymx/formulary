@@ -407,7 +407,7 @@ fn layout_node(ctx: &Ctx, node: &Node) -> MathBox {
             accent.unwrap_or(false),
             accent_under.unwrap_or(false),
         ),
-        Node::Table { rows, column_align } => layout_table(ctx, rows, column_align),
+        Node::Table { rows, column_align } => layout_table(ctx, rows, column_align, false),
         Node::Sqrt(children) => {
             let content = layout_row(&ctx.cramped_child(), children);
             layout_radical(ctx, content, None)
@@ -477,6 +477,11 @@ fn layout_styled(ctx: &Ctx, styles: &StyleOverrides, children: &[Node]) -> MathB
     // single-child mrows: the enclosing row owns the child's operator
     // spacing.
     let b = match children {
+        // displaystyle on the mtable itself reaches its cells: in Core's UA
+        // stylesheet the attribute overrides mtable's `math-style: compact`.
+        [Node::Table { rows, column_align }] if styles.display_style.is_some() => {
+            layout_table(&inner, rows, column_align, inner.display_style)
+        }
         [only] => layout_node(&inner, only),
         _ => layout_row(&inner, children),
     };
@@ -512,13 +517,19 @@ fn decorate(styles: &StyleOverrides, mut b: MathBox) -> MathBox {
 
 /// `<mtable>`: cells baseline-aligned within each row, columns sized to
 /// their widest cell, and the whole table vertically centered on the math
-/// axis. Cells lay out in text style (displaystyle off), per MathML Core,
-/// and carry Core's UA-stylesheet cell padding (0.4 em / 0.5 ex per side).
+/// axis. Cells lay out in text style (displaystyle off) unless the mtable
+/// sets `displaystyle` itself, per MathML Core, and carry Core's
+/// UA-stylesheet cell padding (0.4 em / 0.5 ex per side).
 /// `columnalign` sets per-column alignment (default center; last entry
 /// repeats).
-fn layout_table(ctx: &Ctx, rows: &[Vec<TableCell>], column_align: &[ColumnAlign]) -> MathBox {
+fn layout_table(
+    ctx: &Ctx,
+    rows: &[Vec<TableCell>],
+    column_align: &[ColumnAlign],
+    display_style: bool,
+) -> MathBox {
     let cell_ctx = ctx.styled_child(&StyleOverrides {
-        display_style: Some(false),
+        display_style: Some(display_style),
         ..StyleOverrides::default()
     });
 
